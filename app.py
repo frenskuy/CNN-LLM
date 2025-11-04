@@ -34,7 +34,7 @@ disease_info = load_disease_info()
 @st.cache_resource
 def load_classification_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = 'best_model_overall.pth' # Adjust path if different
+    model_path = 'best_model_overall.pth'
 
     if not os.path.exists(model_path):
         st.error(f"Model file '{model_path}' not found. Please ensure the model file is in the application directory.")
@@ -179,3 +179,4 @@ if uploaded_file is not None:
 # --- Footer ---
 st.markdown("---")
 st.caption("Built with ❤️ using Streamlit, PyTorch, and Hugging Face Transformers.")
+
