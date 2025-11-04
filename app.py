@@ -65,7 +65,6 @@ def load_classification_model():
         # Ensure map_location is appropriate
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval() # Set the model to evaluation mode
-        st.success("Classification model loaded successfully.")
         return model, device
 
     except RuntimeError as e:
@@ -83,7 +82,6 @@ model, device = load_classification_model() # Call the function after definition
 def load_llm():
     # Use GPU if available, otherwise CPU
     device_num = 0 if torch.cuda.is_available() else -1
-    st.info("Loading LLM (google/flan-t5-base)... This might take a moment.")
     try:
         pipe = pipeline(
             "text2text-generation",
@@ -92,7 +90,6 @@ def load_llm():
             max_length=300, # Allow slightly longer explanations
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32 # Optional: save GPU memory
         )
-        st.success("LLM (google/flan-t5-base) loaded successfully.")
         return pipe
     except Exception as e:
         st.error(f"Failed to load LLM: {e}")
@@ -213,3 +210,4 @@ if uploaded_file is not None:
 # --- Footer ---
 st.markdown("---")
 st.caption("Built with ❤️ using Streamlit, PyTorch, and Hugging Face Transformers.")
+
