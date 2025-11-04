@@ -34,7 +34,7 @@ disease_info = load_disease_info()
 @st.cache_resource
 def load_classification_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = 'best_model_overall.pth'
+    model_path = 'best_model_overall.pth' # Adjust path if different
 
     if not os.path.exists(model_path):
         st.error(f"Model file '{model_path}' not found. Please ensure the model file is in the application directory.")
@@ -78,24 +78,27 @@ def load_classification_model():
 
 model, device = load_classification_model() # Call the function after definition
 
-# --- Simulate LLM ---
-def simulate_llm_explanation(predicted_label, disease_info_map, confidence):
-    # Simulate explanation based on disease information
-    info = disease_info_map.get(predicted_label, {})
-    symptoms = ", ".join(info.get("general_symptoms", ["Symptoms not found"]))
-    causes = info.get("cause", "Cause not found")
-    treatment = info.get("treatment", "Treatment not found")
-    prevention = info.get("prevention", "Prevention not found")
+# --- Load LLM (Flan-T5-Base) ---
+@st.cache_resource
+def load_llm():
+    # Use GPU if available, otherwise CPU
+    device_num = 0 if torch.cuda.is_available() else -1
+    st.info("Loading LLM (google/flan-t5-base)... This might take a moment.")
+    try:
+        pipe = pipeline(
+            "text2text-generation",
+            model="google/flan-t5-base", # Use the smaller base model
+            device=device_num, # Use -1 for CPU
+            max_length=300, # Allow slightly longer explanations
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32 # Optional: save GPU memory
+        )
+        st.success("LLM (google/flan-t5-base) loaded successfully.")
+        return pipe
+    except Exception as e:
+        st.error(f"Failed to load LLM: {e}")
+        st.stop() # Stop the app if LLM fails to load
 
-    explanation = f"""
-    Automated Explanation (Simulation):
-    - Prediction: {predicted_label} (Confidence: {confidence:.2f}%)
-    - General Symptoms: {symptoms}
-    - Cause: {causes}
-    - Treatment: {treatment}
-    - Prevention: {prevention}
-    """
-    return explanation.strip()
+llm_pipe = load_llm() # Load the LLM
 
 # --- Prediction Function ---
 def predict_image(image, model, device):
@@ -131,6 +134,36 @@ def predict_image(image, model, device):
     confidence_percent = confidence.item() * 100
 
     return predicted_label, confidence_percent
+
+# --- Generate LLM Explanation ---
+def generate_llm_explanation(predicted_label, disease_info_map, confidence, llm_pipeline):
+    # Fetch specific disease info
+    info = disease_info_map.get(predicted_label, {})
+    symptoms = ", ".join(info.get("general_symptoms", ["Symptoms not found"]))
+    causes = info.get("cause", "Cause not found")
+    treatment = info.get("treatment", "Treatment not found")
+    prevention = info.get("prevention", "Prevention not found")
+
+    # Create a detailed prompt for the LLM
+    prompt = f"""
+    You are an expert agricultural advisor. A plant disease classifier has identified a plant leaf as '{predicted_label}' with a confidence level of {confidence:.2f}%.
+    The general symptoms observed are: {symptoms}.
+    The known cause is: {causes}.
+    Recommended treatment is: {treatment}.
+    Recommended prevention methods are: {prevention}.
+    Please provide a clear, concise, and informative explanation about this disease, its symptoms, cause, treatment, and prevention, suitable for a farmer or gardener.
+    """
+
+    # Generate explanation using the LLM pipeline
+    try:
+        # Remove 'return_full_text' if it causes issues with the pipeline version
+        result = llm_pipeline(prompt, max_length=300, do_sample=False)
+        explanation = result[0]['generated_text']
+        return explanation
+    except Exception as e:
+        st.error(f"An error occurred while generating the LLM explanation: {e}")
+        # Fallback to simulation if LLM fails
+        return f"LLM explanation failed. Simulated explanation: Disease {predicted_label} (Conf: {confidence:.2f}%). Symptom: {symptoms}. Cause: {causes}. Treatment: {treatment}. Prevention: {prevention}."
 
 
 # --- Streamlit Interface ---
@@ -169,14 +202,14 @@ if uploaded_file is not None:
     else:
         st.warning(f"Detailed information for '{predicted_label}' was not found in the database.")
 
-    # 4. Generate LLM Explanation (Simulation)
-    st.subheader("Automated Explanation (Simulation)")
-    # Simulation because large LLMs can crash Streamlit Community Cloud
-    simulated_explanation = simulate_llm_explanation(predicted_label, disease_info, confidence)
-    st.write(simulated_explanation)
+    # 4. Generate LLM Explanation (Now using the actual LLM)
+    st.subheader("Automated Explanation (LLM - google/flan-t5-base)")
+    with st.spinner("Generating explanation using LLM..."):
+        # Pass the loaded llm_pipe to the function
+        llm_explanation = generate_llm_explanation(predicted_label, disease_info, confidence, llm_pipe)
+    st.write(llm_explanation)
 
 
 # --- Footer ---
 st.markdown("---")
 st.caption("Built with ❤️ using Streamlit, PyTorch, and Hugging Face Transformers.")
-
