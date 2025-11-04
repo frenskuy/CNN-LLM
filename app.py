@@ -12,7 +12,6 @@ import json
 import os
 from io import BytesIO
 from torchvision import transforms # Move import here
-# You might also need to import F if using activation functions like softmax in other functions
 import torch.nn.functional as F 
 
 # --- Basic Configuration ---
@@ -42,21 +41,30 @@ def load_classification_model():
         st.stop()
 
     try:
-        # Build model architecture as per training
-        # Important: Create the model with the default classifier first
-        model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
+        # 1. Create the base model architecture (EfficientNetV2-M)
+        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
 
-        # Get the number of features from the default classifier
-        num_features = model.classifier.in_features
+        # 2. Get the number of input features for the default classifier
+        num_features = base_model.classifier.in_features
 
-        # Replace the classifier layer to match the number of classes (12)
-        model.classifier = nn.Linear(num_features, 12)
+        # 3. CRITICAL: Recreate the EXACT classifier architecture used during training
+        # Based on the llm_testing.txt: Sequential(Dropout, Linear, ReLU, Dropout, Linear)
+        num_classes = 11 # IMPORTANT: This must match the number of classes used during training
+        base_model.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(num_features, 128), # First Linear layer
+            nn.ReLU(),                    # Activation function
+            nn.Dropout(0.2),              # Second Dropout
+            nn.Linear(128, num_classes)   # Final Linear layer to number of classes (11)
+        )
 
-        # Load the state_dict into the modified architecture model
+        # 4. Assign the modified base_model to model variable
+        model = base_model.to(device)
+
+        # 5. Load the saved state dictionary
         # Ensure map_location is appropriate
         model.load_state_dict(torch.load(model_path, map_location=device))
-        model.to(device)
-        model.eval()
+        model.eval() # Set the model to evaluation mode
         st.success("Classification model loaded successfully.")
         return model, device
 
@@ -102,29 +110,17 @@ def predict_image(image, model, device):
 
     with torch.no_grad():
         outputs = model(img_tensor)
+        # outputs now comes from the Sequential classifier: Linear(128, num_classes)
         probabilities = torch.nn.functional.softmax(outputs, dim=1)
         confidence, predicted_idx = torch.max(probabilities, 1)
 
-    # Update class_names according to the actual number of classes used during training
-    # Based on the error previously and the disease_info.json provided,
-    # it seems there are 11 classes. Please check the original notebook again.
-    # For example, if training was done with 12 classes, this list must have 12 items.
-    # Example with 11 classes (as in the provided disease_info.json):
+    # IMPORTANT: Update class_names according to the number of classes used during training (11)
     class_names = [
         'Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
         'Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)', 'Grape___healthy',
         'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'
-        # Add the 12th class if it exists, e.g., 'Class_12___other'
+        # Harus 11 kelas sesuai num_classes = 11 di atas
     ]
-
-    # If your model was actually trained for 12 classes, you must add one more class here
-    # and ensure disease_info.json also includes it.
-    # For example, if the 12th class was 'Tomato___Blight':
-    # class_names = [
-    #     'Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
-    #     'Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)', 'Grape___healthy',
-    #     'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy', 'Tomato___Blight'
-    # ]
 
     # Ensure the predicted index does not exceed the number of defined class_names
     if predicted_idx.item() >= len(class_names):
