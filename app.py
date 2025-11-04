@@ -37,17 +37,33 @@ def load_classification_model():
         st.error(f"Model file '{model_path}' tidak ditemukan. Harap pastikan file model ada di direktori aplikasi.")
         st.stop()
 
-    # Buat arsitektur model sesuai training
-    model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
-    num_features = model.classifier.in_features
-    model.classifier = nn.Linear(num_features, 12) # 12 kelas, sesuaikan jika berbeda
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.to(device)
-    model.eval()
-    return model, device
+    try:
+        # Buat arsitektur model sesuai training
+        # Penting: Buat model dengan classifier default terlebih dahulu
+        model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
 
-model, device = load_classification_model()
+        # Dapatkan jumlah fitur dari classifier default
+        num_features = model.classifier.in_features
 
+        # Ganti layer classifier dengan yang sesuai jumlah kelas (12)
+        model.classifier = nn.Linear(num_features, 12)
+
+        # Muat state_dict ke model yang sudah dimodifikasi arsitekturnya
+        # Pastikan map_location sesuai
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
+        st.success("Model klasifikasi berhasil dimuat.")
+        return model, device
+
+    except RuntimeError as e:
+        st.error(f"Terjadi kesalahan saat memuat model: {e}")
+        st.error("Kemungkinan besar arsitektur model di kode tidak cocok dengan state_dict dalam file model. Periksa kembali jumlah kelas dan arsitektur model.")
+        st.stop() # Hentikan aplikasi jika model gagal dimuat
+    except Exception as e:
+        st.error(f"Terjadi kesalahan umum saat memuat model: {e}")
+        st.stop() # Hentikan aplikasi jika terjadi error lain
+        
 # --- Load LLM ---
 @st.cache_resource
 def load_llm():
@@ -179,4 +195,5 @@ if uploaded_file is not None:
 
 # --- Footer ---
 st.markdown("---")
+
 st.caption("Dibangun dengan ❤️ menggunakan Streamlit, PyTorch, dan Hugging Face Transformers.")
