@@ -102,39 +102,6 @@ Grape___Leaf_blight_(Isariopsis_Leaf_Spot)   1.0000    1.0000    1.0000       22
                   weighted avg               0.9968    0.9968    0.9968      1877
 ```
 
-## 🧪 Reproduksi Evaluasi (contoh)
-
-```python
-# contoh: scripts/eval.py
-import torch, json
-from sklearn.metrics import classification_report
-from src.inference import load_cnn
-from src.transforms import get_eval_transform
-from torch.utils.data import DataLoader
-from torchvision.datasets import ImageFolder
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-cnn = load_cnn("best_model_overall.pth", device=device)
-
-ds = ImageFolder("data/test", transform=get_eval_transform(size=224))
-dl = DataLoader(ds, batch_size=64, num_workers=4)
-
-y_true, y_pred = [], []
-with torch.inference_mode():
-    for x, y in dl:
-        x = x.to(device)
-        logits = cnn(x)
-        y_hat = logits.argmax(1).cpu().tolist()
-        y_pred += y_hat
-        y_true += y.cpu().tolist()
-
-target_names = ds.classes
-print(\"Classification Report:\\n\")
-print(classification_report(y_true, y_pred, target_names=target_names, digits=4))
-```
-
----
-
 ## 🗃️ Struktur Proyek (ringkas)
 
 ```
@@ -167,6 +134,6 @@ MIT — bebas digunakan untuk riset maupun pengembangan lebih lanjut.
 
 ## 🙏 Apresiasi
 
-- PlantVillage dataset
+- PlantVillage dataset https://github.com/spMohanty/PlantVillage-Dataset.git
 - PyTorch, timm, Hugging Face Transformers, Streamlit
 - Komunitas open-source
