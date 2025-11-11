@@ -255,7 +255,6 @@ def load_llm(model_name: str = "google/flan-t5-base"):
             "text2text-generation",
             model=model_name,
             device=0 if torch.cuda.is_available() else -1,
-            max_length=200
         )
         return pipe
     except Exception as e:
@@ -294,15 +293,21 @@ def build_llm_prompt(label: str, disease_info_map: dict) -> str:
     general = info.get("general_symptoms", [])
     distinct = info.get("distinguishing_features", [])
     actions = info.get("early_actions", [])
-    prompt = (
-        f"You are an agronomy assistant. Explain briefly and factually why the class **{label}** "
-        f"was predicted from the uploaded leaf image. Present three parts: "
-        f"(1) general symptoms, (2) distinguishing features from other classes, "
-        f"(3) recommended early actions. Use clear English, 3–6 sentences.\n\n"
-        f"General symptoms (hints): {'; '.join(general)}\n"
-        f"Distinguishing features (hints): {'; '.join(distinct)}\n"
-        f"Early actions (hints): {'; '.join(actions)}"
-    )
+    prompt = f"""
+    You are an agronomy assistant who explains plant leaf disease classification results **clearly, informatively, and accurately** in English. Ground your explanation in agronomic knowledge and visible symptoms.
+    ### CNN Inference Results
+    - Primary predicted label: **{predicted_label}**
+    - Model confidence (probability): **{confidence:.3f}**
+    ### Characteristic Symptoms (from internal knowledge base)
+    - General symptoms: {('; '.join(general_symptoms))}
+    - Distinguishing features: {('; '.join(distinguishing_features))}
+    ### Your Tasks
+    1. Explain **why** this image most likely belongs to the label '{predicted_label}', linking your reasoning to the characteristic symptoms provided.
+    2. Highlight **distinguishing cues** that differentiate this disease from others (e.g., 'Early_blight has concentric rings, unlike Late_blight which is water-soaked').
+    3. Provide **safe, general early actions** for follow-up (no brand-specific fungicide prescriptions).
+    4. Use a professional, concise tone; maximum **8–10 sentences**.
+    5. Do not invent facts beyond the known symptom domain; if uncertain, **state the uncertainty briefly**.
+    """
     return prompt
 
 
@@ -392,3 +397,4 @@ if run_btn:
                 st.image(image, caption=f"Input - Prediction: {top_labels[0]} ({top_percent[0]:.2f}%)", use_container_width=True)
 
 st.markdown("---")
+
