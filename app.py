@@ -1,16 +1,11 @@
-# app.py
-# =============================================================================
-# Aplikasi Streamlit: UI persis seperti yang kamu kirim.
-# Semua logika model/LLM/transform/inferensi didelegasikan ke tftf.py
-# =============================================================================
 import torch
 import streamlit as st
 from PIL import Image
 import requests
 from io import BytesIO
 
-# Import util dari tftf.py
-from tftf import (
+# Import util
+from classificationllm import (
     load_model as core_load_model,
     load_llm as core_load_llm,
     get_transform as core_get_transform,
@@ -175,3 +170,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
