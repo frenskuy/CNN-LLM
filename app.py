@@ -1,10 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import transforms
 from PIL import Image
 import streamlit as st
-from transformers import pipeline
 import requests
 from io import BytesIO
 import timm
@@ -195,25 +193,29 @@ def load_model():
     """Load the trained model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Create model architecture
-    base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
-    num_features = base_model.classifier.in_features
-    num_classes = 11
-    
-    base_model.classifier = nn.Sequential(
-        nn.Dropout(0.2),
-        nn.Linear(num_features, 128),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(128, num_classes)
-    )
-    
-    # Load weights
-    model = base_model.to(device)
-    model.load_state_dict(torch.load('best_model_overall.pth', map_location=device))
-    model.eval()
-    
-    return model, device
+    try:
+        # Create model architecture
+        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
+        num_features = base_model.classifier.in_features
+        num_classes = 11
+        
+        base_model.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(num_features, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+        
+        # Load weights
+        model = base_model.to(device)
+        model.load_state_dict(torch.load('best_model_overall.pth', map_location=device))
+        model.eval()
+        
+        return model, device
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None, None
 
 def get_transform():
     """Get the validation transform"""
@@ -250,38 +252,60 @@ def predict_image(image, model, transform, device):
         st.error(f"Error during prediction: {e}")
         return None, None, None
 
-def generate_explanation(predicted_label, confidence, llm_pipeline):
-    """Generate explanation using LLM"""
+def generate_explanation(predicted_label, confidence):
+    """Generate structured explanation from disease info"""
     if predicted_label not in disease_info:
-        return f"The model predicted '{predicted_label}' with confidence {confidence:.3f}. Detailed information for this specific class is not available."
+        return f"The model predicted '{predicted_label}' with confidence {confidence:.1%}. Detailed information for this specific class is not available."
     
     disease_details = disease_info[predicted_label]
     general_symptoms = disease_details.get("general_symptoms", ["Symptoms not specified."])
     distinguishing_features = disease_details.get("distinguishing_features", ["Features not specified."])
+    early_actions = disease_details.get("early_actions", ["General monitoring recommended."])
     
-    prompt = f"""
-    You are an agronomy assistant who explains plant leaf disease classification results clearly and accurately in English.
-    ### CNN Inference Results
-    - Primary predicted label: **{predicted_label}**
-    - Model confidence (probability): **{confidence:.3f}**
-    ### Characteristic Symptoms
-    - General symptoms: {'; '.join(general_symptoms)}
-    - Distinguishing features: {'; '.join(distinguishing_features)}
-    ### Your Tasks
-    1. Explain why this image likely belongs to '{predicted_label}', linking to characteristic symptoms.
-    2. Highlight distinguishing cues that differentiate this disease from others.
-    3. Provide safe, general early actions for follow-up.
-    4. Use a professional, concise tone; maximum 8-10 sentences.
-    """
+    # Parse the predicted label
+    parts = predicted_label.split('___')
+    plant_type = parts[0] if len(parts) > 0 else "Plant"
+    disease_name = parts[1].replace('_', ' ') if len(parts) > 1 else "Unknown"
     
-    try:
-        explanation_result = llm_pipeline(prompt, max_length=200, do_sample=True, temperature=0.7, truncation=True)
-        explanation = explanation_result[0]['generated_text']
-    except Exception as e:
-        st.warning(f"Could not generate LLM explanation: {e}")
-        explanation = f"The model predicted '{predicted_label}' with {confidence:.1%} confidence. "
-        explanation += f"General symptoms: {'; '.join(general_symptoms)}. "
-        explanation += f"Distinguishing features: {'; '.join(distinguishing_features)}."
+    # Create explanation based on whether it's healthy or diseased
+    if "healthy" in disease_name.lower():
+        explanation = f"### 🌿 Diagnosis: Healthy {plant_type} Plant\n\n"
+        explanation += f"The analysis indicates that this {plant_type.lower()} leaf appears **healthy** with a confidence level of **{confidence:.1%}**. "
+        explanation += f"The leaf exhibits {general_symptoms[0].lower()}, which are characteristic indicators of healthy plant tissue. "
+        explanation += "The absence of disease symptoms such as lesions, discoloration patterns, or fungal growth confirms this positive assessment.\n\n"
+        
+        explanation += "**Visual Characteristics:**\n\n"
+        explanation += f"The examined leaf shows {distinguishing_features[0].lower()}, which is typical of well-maintained and disease-free foliage. "
+        explanation += "The uniform coloration and intact tissue structure indicate proper nutrient uptake and absence of pathogen infection.\n\n"
+        
+        explanation += "**Recommendations:**\n\n"
+        for i, action in enumerate(early_actions, 1):
+            explanation += f"{i}. {action}\n"
+        explanation += f"{len(early_actions) + 1}. Maintain current cultivation practices including proper watering, fertilization, and pest management\n"
+        explanation += f"{len(early_actions) + 2}. Regular monitoring is essential to detect any early signs of disease development\n"
+    else:
+        explanation = f"### 🔬 Diagnosis: {disease_name.title()}\n\n"
+        explanation += f"The image analysis has identified **{disease_name.lower()}** affecting this {plant_type.lower()} plant with a confidence level of **{confidence:.1%}**. "
+        explanation += f"This disease typically manifests as {general_symptoms[0].lower()}. "
+        
+        if len(general_symptoms) > 1:
+            explanation += f"Additionally, affected plants may exhibit {general_symptoms[1].lower()}. "
+        
+        if len(general_symptoms) > 2:
+            explanation += f"{general_symptoms[2]} "
+        
+        explanation += "\n\n**Key Distinguishing Features:**\n\n"
+        for i, feature in enumerate(distinguishing_features, 1):
+            explanation += f"{i}. {feature}\n"
+        
+        explanation += f"\nThese specific visual indicators help differentiate {disease_name.lower()} from other common plant diseases, ensuring accurate diagnosis and appropriate treatment planning.\n\n"
+        
+        explanation += "**Recommended Actions:**\n\n"
+        for i, action in enumerate(early_actions, 1):
+            explanation += f"{i}. {action}\n"
+        
+        explanation += "\n**Important Note:** Early detection and proper disease management are crucial for preventing disease spread and minimizing crop damage. "
+        explanation += "Consider consulting with a local agricultural extension officer for region-specific treatment recommendations and best practices.\n"
     
     return explanation
 
@@ -290,11 +314,15 @@ def main():
     st.title("🌿 Plant Disease Classification System")
     st.write("Upload an image of a plant leaf to detect diseases in Apple, Grape, and Potato plants.")
     
-    # Load model and LLM
+    # Load model
     with st.spinner("Loading model..."):
         model, device = load_model()
-        transform = get_transform()
-    
+        
+    if model is None:
+        st.error("Failed to load model. Please check if 'best_model_overall.pth' exists.")
+        return
+        
+    transform = get_transform()
     st.success("Model loaded successfully!")
     
     # Sidebar
@@ -302,7 +330,7 @@ def main():
     st.sidebar.info(
         "This application uses a deep learning model (EfficientNetV2-M) "
         "to classify plant diseases in Apple, Grape, and Potato leaves. "
-        "It provides detailed explanations using an AI language model."
+        "It provides detailed explanations based on agronomic knowledge."
     )
     
     st.sidebar.header("Supported Classes")
@@ -322,7 +350,7 @@ def main():
         image_url = st.text_input("Enter image URL:")
         if image_url:
             try:
-                response = requests.get(image_url)
+                response = requests.get(image_url, timeout=10)
                 response.raise_for_status()
                 image = Image.open(BytesIO(response.content))
             except Exception as e:
@@ -369,9 +397,9 @@ def main():
                 explanation = generate_explanation(predicted_label, confidence)
                 st.markdown(explanation)
                 
-                # Display disease information
+                # Display disease information in expandable sections
                 if predicted_label in disease_info:
-                    st.subheader("🔬 Disease Information")
+                    st.subheader("🔬 Additional Disease Information")
                     disease_details = disease_info[predicted_label]
                     
                     with st.expander("General Symptoms"):
