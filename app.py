@@ -15,7 +15,7 @@
 import os
 import io
 import traceback
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import streamlit as st
 import torch
@@ -25,6 +25,8 @@ from PIL import Image
 import numpy as np
 import timm
 from torchvision import transforms as T
+from pathlib import Path
+import requests
 
 # -----------------------------------------------------------------------------
 # 1) Konfigurasi Halaman
@@ -212,6 +214,54 @@ def _tidy_state_dict_keys(state_dict: dict) -> dict:
             new_sd[k] = v
     return new_sd
 
+def _find_weights_file(name: str = "best_model_overall.pth") -> Optional[str]:
+    """
+    Cari file bobot di beberapa lokasi umum:
+    - CWD (tempat app dijalankan)
+    - folder yang sama dengan app.py
+    - subfolder umum: weights/, model/, models/
+    - pencarian rekursif dengan rglob
+    Return: path absolut (str) jika ketemu, else None.
+    """
+    here = Path(__file__).resolve().parent
+    cwd = Path.cwd()
+
+    candidates = [
+        cwd / name,
+        here / name,
+        cwd / "weights" / name,
+        here / "weights" / name,
+        cwd / "model" / name,
+        here / "model" / name,
+        cwd / "models" / name,
+        here / "models" / name,
+    ]
+
+    # Sertakan hasil rglob (prioritas terakhir)
+    try:
+        candidates += list(cwd.rglob(name))
+    except Exception:
+        pass
+    if here != cwd:
+        try:
+            candidates += list(here.rglob(name))
+        except Exception:
+            pass
+
+    seen = set()
+    for p in candidates:
+        try:
+            p = Path(p).resolve()
+        except Exception:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        if p.exists() and p.is_file():
+            return str(p)
+
+    return None
+
 @st.cache_resource(show_spinner=True)
 def load_model() -> Tuple[nn.Module, torch.device, bool]:
     """
@@ -252,12 +302,26 @@ def load_model() -> Tuple[nn.Module, torch.device, bool]:
             nn.Linear(in_features, len(CLASS_NAMES))
         )
 
-    weights_path = "best_model_overall.pth"
+    # 🔎 Cari bobot secara cerdas
+    weights_path = _find_weights_file("best_model_overall.pth")
     loaded_ok = False
-    if os.path.exists(weights_path):
+
+    if weights_path is not None:
         try:
+            # Deteksi cepat kasus Git LFS pointer (file sangat kecil dan berisi header khas)
+            try:
+                with open(weights_path, "rb") as f:
+                    head = f.read(2048)
+                # Heuristik sederhana pointer LFS
+                if (b"git-lfs" in head) or (b"oid sha256:" in head and b"version https://git-lfs.github.com/spec" in head):
+                    st.warning(
+                        f"File '{weights_path}' tampaknya pointer Git LFS, bukan bobot sebenarnya.\n"
+                        "Pastikan LFS ter-fetch (bukan hanya pointer)."
+                    )
+            except Exception:
+                pass
+
             ckpt = torch.load(weights_path, map_location="cpu")
-            # Tangani variasi struktur checkpoint
             if isinstance(ckpt, dict) and "state_dict" in ckpt:
                 sd = _tidy_state_dict_keys(ckpt["state_dict"])
             elif isinstance(ckpt, dict) and "model_state" in ckpt:
@@ -269,16 +333,17 @@ def load_model() -> Tuple[nn.Module, torch.device, bool]:
 
             model.load_state_dict(sd, strict=False)
             loaded_ok = True
+            st.success(f"Bobot dimuat dari: {weights_path}")
         except Exception as e:
             st.warning(
-                "⚠️ Gagal memuat bobot 'best_model_overall.pth'. "
-                "Model akan berjalan dengan head acak (hasil tidak andal)."
+                "⚠️ Gagal memuat bobot. Model berjalan dengan head acak (hasil tidak andal)."
             )
             st.exception(e)
     else:
+        # Tampilkan info lokasi yang sudah dicek agar mudah ditelusuri
         st.info(
-            "ℹ️ File bobot 'best_model_overall.pth' tidak ditemukan. "
-            "Model berjalan dengan head acak (hasil tidak andal)."
+            "ℹ️ File bobot 'best_model_overall.pth' tidak ditemukan di CWD/script dir/subfolder umum.\n"
+            "Letakkan file di folder yang sama dengan app.py atau di subfolder 'weights/'."
         )
 
     model.to(device)
@@ -300,7 +365,7 @@ def predict(model: nn.Module, device: torch.device, x: torch.Tensor, topk: int =
     idx_sorted = np.argsort(probs)[::-1][:topk]
     return probs[idx_sorted], idx_sorted
 
-def build_explanation(label_top: str, prob_top: float, label_next: str = None) -> str:
+def build_explanation(label_top: str, prob_top: float, label_next: Optional[str] = None) -> str:
     """
     Bangun penjelasan ringkas berbasis kamus DISEASE_INFO.
     Ini bukan diagnosis, hanya edukasi awal untuk memahami prediksi model.
@@ -374,7 +439,7 @@ st.toast(status_text)
 # -----------------------------------------------------------------------------
 # 7) Ambil Gambar Input
 # -----------------------------------------------------------------------------
-def load_image_from_any() -> Image.Image:
+def load_image_from_any() -> Optional[Image.Image]:
     """Ambil gambar dari upload atau URL. Mengembalikan PIL.Image atau None."""
     if uploaded is not None:
         try:
@@ -385,7 +450,6 @@ def load_image_from_any() -> Image.Image:
             return None
     if url_input:
         try:
-            import requests
             resp = requests.get(url_input, timeout=10)
             resp.raise_for_status()
             return Image.open(io.BytesIO(resp.content))
@@ -456,7 +520,32 @@ with st.expander("ℹ️ Informasi Perangkat & Model"):
     st.write("Bobot dimuat:", "✅" if loaded_ok else "❌")
     st.caption(
         "Tip: Tempatkan `best_model_overall.pth` (hasil training Anda) di direktori yang sama "
-        "agar prediksi valid. Struktur checkpoint fleksibel: state_dict, model_state, atau langsung."
+        "atau di subfolder `weights/` agar prediksi valid. Struktur checkpoint fleksibel: "
+        "`state_dict`, `model_state`, atau langsung."
     )
 
+# -----------------------------------------------------------------------------
+# 10) Debug Path (opsional; boleh dihapus setelah beres)
+# -----------------------------------------------------------------------------
+with st.expander("🧪 Debug Path (sementara)"):
+    try:
+        st.write("CWD:", os.getcwd())
+    except Exception as e:
+        st.write("CWD: <error>", e)
 
+    try:
+        here = Path(__file__).resolve().parent
+        st.write("Script dir:", str(here))
+    except Exception as e:
+        st.write("Script dir: <error>", e)
+
+    try:
+        st.write("Isi CWD:", os.listdir("."))
+    except Exception as e:
+        st.write("Isi CWD: <error>", e)
+
+    try:
+        matches = list(Path(".").rglob("best_model_overall.pth"))
+        st.write("Rglob matches (CWD):", [str(p) for p in matches])
+    except Exception as e:
+        st.write("Rglob matches: <error>", e)
