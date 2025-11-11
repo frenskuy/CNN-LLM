@@ -1,7 +1,8 @@
+streamlit
 torch
 torchvision
-timm
+pillow
 transformers
-streamlit
-Pillow
-requests
+timm
+matplotlib
+numpy
