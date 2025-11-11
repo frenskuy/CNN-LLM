@@ -1,9 +1,10 @@
 torch
 torchvision
 streamlit
-transformers
 timm
 pillow
 requests
-scikit-learn
-numpy
+transformers
+sentencepiece
+protobuf
+accelerate
