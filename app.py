@@ -188,10 +188,96 @@ class_names = [
     'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'
 ]
 
+def download_model_from_url(url, save_path='best_model_overall.pth'):
+    """Download model from URL if not exists locally"""
+    import os
+    if os.path.exists(save_path):
+        file_size = os.path.getsize(save_path)
+        if file_size > 1000:  # File exists and is not a placeholder
+            return True
+    
+    try:
+        st.info(f"Downloading model from URL...")
+        response = requests.get(url, stream=True, timeout=300)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(save_path, 'wb') as f:
+            if total_size == 0:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                progress_bar = st.progress(0)
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress_bar.progress(min(downloaded / total_size, 1.0))
+        
+        st.success("✅ Model downloaded successfully!")
+        return True
+    except Exception as e:
+        st.error(f"Failed to download model: {e}")
+        return False
+
 @st.cache_resource
-def load_model():
+def load_model(model_url=None):
     """Load the trained model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    import os
+    model_path = 'best_model_overall.pth'
+    
+    # Try to download from URL if provided and file doesn't exist
+    if model_url and not os.path.exists(model_path):
+        if not download_model_from_url(model_url, model_path):
+            return None, None
+    
+    # Check if model file exists
+    if not os.path.exists(model_path):
+        st.error(f"❌ Model file '{model_path}' not found.")
+        st.info("""
+        **Please provide model file using one of these methods:**
+        
+        1. **Upload via GitHub with Git LFS** (for files > 100MB):
+           ```bash
+           git lfs install
+           git lfs track "*.pth"
+           git add .gitattributes best_model_overall.pth
+           git commit -m "Add model"
+           git push
+           ```
+        
+        2. **Host on Google Drive:**
+           - Upload your .pth file to Google Drive
+           - Get shareable link (Anyone with the link can view)
+           - Convert to direct download link
+           - Add URL to secrets.toml or code
+        
+        3. **Use Hugging Face Hub:**
+           - Upload model to Hugging Face
+           - Download in app using URL
+        """)
+        return None, None
+    
+    # Check file size
+    file_size = os.path.getsize(model_path)
+    st.info(f"📦 Model file found. Size: {file_size / (1024*1024):.2f} MB")
+    
+    if file_size < 1000:  # Less than 1KB - likely a Git LFS pointer
+        st.error("⚠️ Model file appears to be a Git LFS pointer file (too small).")
+        st.info("""
+        **Fix Git LFS issue:**
+        ```bash
+        git lfs pull
+        git add best_model_overall.pth
+        git commit -m "Update model file"
+        git push
+        ```
+        Or provide a direct download URL for the model.
+        """)
+        return None, None
     
     try:
         # Create model architecture
@@ -209,12 +295,34 @@ def load_model():
         
         # Load weights
         model = base_model.to(device)
-        model.load_state_dict(torch.load('best_model_overall.pth', map_location=device))
+        
+        with st.spinner("Loading model weights..."):
+            try:
+                # Try normal loading
+                state_dict = torch.load(model_path, map_location=device)
+                model.load_state_dict(state_dict)
+            except Exception as e1:
+                st.warning(f"Normal loading failed, trying alternative method...")
+                try:
+                    # Try loading with weights_only=False
+                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
+                    model.load_state_dict(state_dict)
+                except Exception as e2:
+                    raise e2
+        
         model.eval()
+        st.success("✅ Model loaded successfully!")
         
         return model, device
+        
     except Exception as e:
-        st.error(f"Error loading model: {e}")
+        st.error(f"❌ Error loading model: {str(e)}")
+        st.info("""
+        **The model file might be corrupted. Please:**
+        1. Re-download the original model file
+        2. Verify the file is not corrupted (check file size)
+        3. Re-upload to GitHub using Git LFS
+        """)
         return None, None
 
 def get_transform():
@@ -314,12 +422,33 @@ def main():
     st.title("🌿 Plant Disease Classification System")
     st.write("Upload an image of a plant leaf to detect diseases in Apple, Grape, and Potato plants.")
     
+    # Optional: Allow model URL from Streamlit secrets or sidebar
+    model_url = None
+    
+    # Try to get model URL from secrets
+    try:
+        model_url = st.secrets.get("model_url", None)
+    except:
+        pass
+    
+    # Allow manual URL input in sidebar if model not found
+    if not model_url:
+        with st.sidebar:
+            st.header("⚙️ Model Configuration")
+            manual_url = st.text_input(
+                "Model URL (optional)", 
+                placeholder="https://drive.google.com/uc?id=...",
+                help="If model file is not in repository, provide direct download URL"
+            )
+            if manual_url:
+                model_url = manual_url
+    
     # Load model
     with st.spinner("Loading model..."):
-        model, device = load_model()
+        model, device = load_model(model_url)
         
     if model is None:
-        st.error("Failed to load model. Please check if 'best_model_overall.pth' exists.")
+        st.error("Failed to load model. Please check the instructions above.")
         return
         
     transform = get_transform()
