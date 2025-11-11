@@ -222,21 +222,109 @@ def download_model_from_url(url, save_path='best_model_overall.pth'):
         return False
 
 @st.cache_resource
+def load_model_from_file(model_path):
+    """Load model from specific file path"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    import os
+    
+    if not os.path.exists(model_path):
+        st.error(f"Model file {model_path} not found!")
+        return None, None
+    
+    file_size = os.path.getsize(model_path)
+    
+    if file_size < 1000:
+        st.error(f"⚠️ File {model_path} is too small ({file_size} bytes). This is likely a Git LFS pointer file.")
+        st.info("""
+        **To fix this, run in your local repository:**
+        ```bash
+        git lfs pull
+        git add .
+        git commit -m "Pull LFS files"
+        git push
+        ```
+        """)
+        return None, None
+    
+    try:
+        # Create model architecture
+        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
+        num_features = base_model.classifier.in_features
+        num_classes = 11
+        
+        base_model.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(num_features, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+        
+        # Load weights
+        model = base_model.to(device)
+        
+        with st.spinner(f"Loading weights from {model_path}..."):
+            try:
+                state_dict = torch.load(model_path, map_location=device)
+                model.load_state_dict(state_dict)
+            except Exception as e1:
+                st.warning(f"Trying alternative loading method...")
+                try:
+                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
+                    model.load_state_dict(state_dict)
+                except Exception as e2:
+                    st.error(f"Failed to load: {e2}")
+                    raise e2
+        
+        model.eval()
+        st.success(f"✅ Model loaded from {model_path}!")
+        
+        return model, device
+        
+    except Exception as e:
+        st.error(f"❌ Error loading model: {str(e)}")
+        return None, None
+
+@st.cache_resource
 def load_model(model_url=None):
     """Load the trained model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     import os
-    model_path = 'best_model_overall.pth'
+    
+    # Try multiple possible model file names
+    possible_paths = [
+        'best_model_overall.pth',
+        './best_model_overall.pth',
+    ]
+    
+    model_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            file_size = os.path.getsize(path)
+            if file_size > 1000:  # Not a Git LFS pointer
+                model_path = path
+                st.info(f"✅ Found model file: {path}")
+                break
     
     # Try to download from URL if provided and file doesn't exist
-    if model_url and not os.path.exists(model_path):
+    if model_url and model_path is None:
+        model_path = 'best_model_overall.pth'
         if not download_model_from_url(model_url, model_path):
             return None, None
     
     # Check if model file exists
-    if not os.path.exists(model_path):
-        st.error(f"❌ Model file '{model_path}' not found.")
+    if model_path is None or not os.path.exists(model_path):
+        st.error(f"❌ Model file not found in repository.")
+        
+        # Show all files in current directory for debugging
+        st.warning("📂 Files found in current directory:")
+        files = os.listdir('.')
+        for f in files:
+            size = os.path.getsize(f) if os.path.isfile(f) else 0
+            st.text(f"  - {f} ({size} bytes)")
+        
         st.info("""
         **Please provide model file using one of these methods:**
         
@@ -422,37 +510,53 @@ def main():
     st.title("🌿 Plant Disease Classification System")
     st.write("Upload an image of a plant leaf to detect diseases in Apple, Grape, and Potato plants.")
     
-    # Optional: Allow model URL from Streamlit secrets or sidebar
-    model_url = None
+    import os
     
-    # Try to get model URL from secrets
-    try:
-        model_url = st.secrets.get("model_url", None)
-    except:
-        pass
+    # Show model file selector in sidebar
+    with st.sidebar:
+        st.header("⚙️ Model Configuration")
+        
+        # List all .pth files in directory
+        pth_files = [f for f in os.listdir('.') if f.endswith('.pth')]
+        
+        if pth_files:
+            st.success(f"Found {len(pth_files)} model file(s):")
+            selected_model = st.selectbox("Select model file:", pth_files)
+            
+            # Show file info
+            if selected_model:
+                file_size = os.path.getsize(selected_model)
+                st.info(f"Size: {file_size / (1024*1024):.2f} MB")
+                
+                if file_size < 1000:
+                    st.warning("⚠️ File seems too small. Might be Git LFS pointer.")
+        else:
+            st.warning("No .pth files found in repository")
+            selected_model = None
+        
+        # Manual URL input
+        st.subheader("Or provide URL:")
+        manual_url = st.text_input(
+            "Model URL", 
+            placeholder="https://...",
+            help="Direct download URL for model file"
+        )
     
-    # Allow manual URL input in sidebar if model not found
-    if not model_url:
-        with st.sidebar:
-            st.header("⚙️ Model Configuration")
-            manual_url = st.text_input(
-                "Model URL (optional)", 
-                placeholder="https://drive.google.com/uc?id=...",
-                help="If model file is not in repository, provide direct download URL"
-            )
-            if manual_url:
-                model_url = manual_url
+    model_url = manual_url if manual_url else None
     
-    # Load model
+    # Load model with selected file
     with st.spinner("Loading model..."):
-        model, device = load_model(model_url)
+        if pth_files and selected_model:
+            # Override the load_model to use selected file
+            model, device = load_model_from_file(selected_model)
+        else:
+            model, device = load_model(model_url)
         
     if model is None:
-        st.error("Failed to load model. Please check the instructions above.")
+        st.error("Failed to load model. Please check the configuration.")
         return
         
     transform = get_transform()
-    st.success("Model loaded successfully!")
     
     # Sidebar
     st.sidebar.header("About")
