@@ -215,17 +215,6 @@ def load_model():
     
     return model, device
 
-@st.cache_resource
-def load_llm():
-    """Load the LLM pipeline"""
-    llm_pipe = pipeline(
-        "text2text-generation",
-        model="google/flan-t5-base",
-        device=0 if torch.cuda.is_available() else -1,
-        max_length=200
-    )
-    return llm_pipe
-
 def get_transform():
     """Get the validation transform"""
     data_config = {
@@ -304,7 +293,6 @@ def main():
     # Load model and LLM
     with st.spinner("Loading model..."):
         model, device = load_model()
-        llm_pipe = load_llm()
         transform = get_transform()
     
     st.success("Model loaded successfully!")
@@ -378,10 +366,8 @@ def main():
                 
                 # Generate and display explanation
                 st.subheader("📋 Detailed Analysis")
-                with st.spinner("Generating explanation..."):
-                    explanation = generate_explanation(predicted_label, confidence, llm_pipe)
-                
-                st.write(explanation)
+                explanation = generate_explanation(predicted_label, confidence)
+                st.markdown(explanation)
                 
                 # Display disease information
                 if predicted_label in disease_info:
