@@ -1,8 +1,7 @@
-streamlit
-torch
-torchvision
-pillow
-transformers
-timm
-matplotlib
-numpy
+streamlit==1.37.1
+torch==2.3.1
+torchvision==0.18.1
+timm==1.0.8
+pillow==10.4.0
+numpy==1.26.4
+requests==2.32.3
