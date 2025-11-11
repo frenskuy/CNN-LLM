@@ -313,8 +313,11 @@ def predict_and_explain_streamlit(image_path_or_url, model, transform, class_nam
         try:
             prompt = (
                 "You are an agronomy assistant. Explain briefly and factually why this leaf image "
-                f"is predicted as '{predicted_label}'. Provide: (1) general symptoms, "
-                "(2) distinguishing features, (3) early actions. 3–6 sentences.\n\n"
+                f"is predicted as '{clean_label(predicted_label)}'. Present three parts: "
+                "(1) general symptoms, (2) distinguishing features, (3) recommended early actions. "
+                "Use clear English, 3–6 sentences. "
+                "Do not include underscores; write class names as plain words (replace '___' with ' → ' and '_' with spaces)."
+                "\n\n"
                 f"General symptoms (hints): {'; '.join(general_symptoms)}\n"
                 f"Distinguishing features (hints): {'; '.join(distinguishing_features)}\n"
                 f"Early actions (hints): {'; '.join(early_actions)}"
@@ -399,3 +402,4 @@ if run_btn:
                     st.info("No image to display.")
 
 st.markdown("---")
+
