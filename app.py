@@ -256,7 +256,7 @@ def load_model() -> Tuple[nn.Module, torch.device, bool]:
     loaded_ok = False
     if os.path.exists(weights_path):
         try:
-            ckpt = torch.load(weights_path: str, map_location="cpu")
+            ckpt = torch.load(weights_path, map_location="cpu")
             # Tangani variasi struktur checkpoint
             if isinstance(ckpt, dict) and "state_dict" in ckpt:
                 sd = _tidy_state_dict_keys(ckpt["state_dict"])
@@ -458,4 +458,5 @@ with st.expander("ℹ️ Informasi Perangkat & Model"):
         "Tip: Tempatkan `best_model_overall.pth` (hasil training Anda) di direktori yang sama "
         "agar prediksi valid. Struktur checkpoint fleksibel: state_dict, model_state, atau langsung."
     )
+
 
