@@ -1,10 +1,16 @@
+# -*- coding: utf-8 -*-
+"""app.py
+Streamlit App for Plant Disease Classification.
+Uses a pre-loaded model and a static knowledge base for explanations.
+"""
+
 import streamlit as st
 import torch
 import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
 import matplotlib.pyplot as plt
-from transformers import pipeline
+from transformers import pipeline # Tetap diimpor jika ingin mengaktifkan LLM nanti
 import timm
 from timm.data import create_transform
 import torch.nn.functional as F
@@ -19,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Mapping Informasi Penyakit ---
+# --- Mapping Informasi Penyakit (Sama seperti sebelumnya) ---
 disease_info = {
     "Grape___Black_rot": {
         "general_symptoms": [
@@ -185,10 +191,10 @@ disease_info = {
     }
 }
 
-# --- Fungsi untuk Memuat Model ---
+# --- Fungsi untuk Memuat Model (Hanya sekali saat start) ---
 @st.cache_resource
-def load_model_and_pipeline():
-    """Loads the trained model, transformation, and LLM pipeline."""
+def load_model():
+    """Loads the trained model and transformation."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     st.info(f"Using device: {device}")
 
@@ -199,7 +205,7 @@ def load_model_and_pipeline():
          st.error(f"Model file not found at {model_path}. Please ensure it's in the correct directory.")
          st.stop() # Hentikan eksekusi jika model tidak ditemukan
 
-    # Re-create the model architecture
+    # Re-create the model architecture (harus sama persis saat training)
     base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
     num_features = base_model.classifier.in_features
     num_classes = 11
@@ -214,19 +220,6 @@ def load_model_and_pipeline():
     model = base_model.to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-
-    # Inisialisasi LLM
-    try:
-        llm_pipe = pipeline(
-            "text2text-generation",
-            model="google/flan-t5-base",
-            device=0 if torch.cuda.is_available() else -1,
-            max_length=200,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32 # Opsional: kurangi ukuran memori
-        )
-    except Exception as e:
-        st.error(f"Failed to load LLM pipeline: {e}. Proceeding without LLM explanation.")
-        llm_pipe = None
 
     # Transformasi
     data_config = {
@@ -246,8 +239,7 @@ def load_model_and_pipeline():
         'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'
     ]
 
-    return model, transform_val, class_names, device, llm_pipe
-
+    return model, transform_val, class_names, device
 
 # --- Fungsi untuk Prediksi ---
 def predict_image(image, model, transform, class_names, device):
@@ -266,70 +258,56 @@ def predict_image(image, model, transform, class_names, device):
         st.error(f"An error occurred during prediction: {e}")
         return None, None
 
-
-# --- Fungsi untuk Menjelaskan Prediksi ---
-def explain_prediction(predicted_label, confidence, disease_info_map, llm_pipeline):
-    """Generates an explanation for the prediction."""
+# --- Fungsi untuk Menjelaskan Prediksi (Menggunakan Knowledge Base Statis) ---
+def explain_prediction_static(predicted_label, confidence, disease_info_map):
+    """Generates a detailed explanation for the prediction using static knowledge."""
     if predicted_label not in disease_info_map:
-        return f"No detailed info found for label '{predicted_label}'."
+        return f"No detailed information found for label '{predicted_label}' in the knowledge base."
 
     details = disease_info_map[predicted_label]
-    general_symptoms = "; ".join(details.get("general_symptoms", ["Symptoms not specified."]))
-    distinguishing_features = "; ".join(details.get("distinguishing_features", ["Features not specified."]))
-    early_actions = "; ".join(details.get("early_actions", ["General monitoring recommended."]))
 
-    if llm_pipeline is None:
-        # Jika LLM tidak tersedia, gunakan informasi statis
-        explanation = f"""
-        **Prediction:** {predicted_label}
-        **Confidence:** {confidence:.3f}
+    general_symptoms_list = details.get("general_symptoms", ["Symptoms not specified."])
+    distinguishing_features_list = details.get("distinguishing_features", ["Features not specified."])
+    early_actions_list = details.get("early_actions", ["General monitoring recommended."])
 
-        **General Symptoms:** {general_symptoms}
-        **Distinguishing Features:** {distinguishing_features}
-        **Early Actions:** {early_actions}
-        """
-        return explanation
+    # Format list menjadi string paragraf
+    general_symptoms_text = "\n- ".join(general_symptoms_list)
+    distinguishing_features_text = "\n- ".join(distinguishing_features_list)
+    early_actions_text = "\n- ".join(early_actions_list)
 
-    prompt = f"""
-    You are an agronomy assistant explaining plant leaf disease classification results clearly.
-    ### CNN Inference Results
-    - Primary predicted label: **{predicted_label}**
-    - Model confidence: **{confidence:.3f}**
-    ### Characteristic Symptoms
-    - General symptoms: {general_symptoms}
-    - Distinguishing features: {distinguishing_features}
-    ### Your Tasks
-    1. Explain why this image likely belongs to '{predicted_label}', linking to symptoms.
-    2. Highlight distinguishing cues differentiating it from others.
-    3. Provide safe, general early actions.
-    4. Be concise, professional, 8-10 sentences max.
-    5. Do not invent facts.
+    # Buat penjelasan panjang dan terstruktur
+    explanation = f"""
+    **AI Prediction Result:**
+    - **Predicted Disease/Health Status:** {predicted_label}
+    - **Model Confidence:** {confidence:.3f} ({confidence*100:.1f}%)
+
+    ---
+
+    **Detailed Information for '{predicted_label}':**
+
+    **1. General Symptoms:**
+    - {general_symptoms_text}
+
+    **2. Distinguishing Features:**
+    - {distinguishing_features_text}
+
+    **3. Recommended Early Actions:**
+    - {early_actions_text}
+
+    ---
+
+    *This explanation is based on a pre-defined agricultural knowledge base. For critical decisions, please consult a local agricultural expert.*
     """
-
-    try:
-        explanation_result = llm_pipeline(prompt, max_length=200, do_sample=True, temperature=0.7, truncation=True)
-        explanation = explanation_result[0]['generated_text']
-    except Exception as e:
-        st.warning(f"LLM explanation generation failed: {e}. Using static info.")
-        explanation = f"""
-        **Prediction:** {predicted_label}
-        **Confidence:** {confidence:.3f}
-
-        **General Symptoms:** {general_symptoms}
-        **Distinguishing Features:** {distinguishing_features}
-        **Early Actions:** {early_actions}
-        """
     return explanation
-
 
 # --- Main App ---
 def main():
     st.title("🌿 Plant Disease Classifier")
     st.write("Upload an image of a plant leaf to classify its health status using AI.")
 
-    # Load model dan pipeline saat app dijalankan
+    # Load model dan pipeline saat app dijalankan (sekali saja)
     with st.spinner("Loading model and resources..."):
-        model, transform, class_names, device, llm_pipe = load_model_and_pipeline()
+        model, transform, class_names, device = load_model()
 
     # Upload file
     uploaded_file = st.file_uploader("Choose an image file (JPG, PNG)", type=["jpg", "jpeg", "png"])
@@ -353,21 +331,21 @@ def main():
                     st.success(f"**Predicted Class:** {predicted_label}")
                     st.metric(label="Confidence", value=f"{confidence:.3f}")
 
-                # Tampilkan penjelasan
-                st.subheader("Explanation")
-                explanation = explain_prediction(predicted_label, confidence, disease_info, llm_pipe)
+                # Tampilkan penjelasan panjang dan terperinci dari knowledge base
+                st.subheader("Detailed Explanation")
+                explanation = explain_prediction_static(predicted_label, confidence, disease_info)
                 st.write(explanation)
 
-                # Info tambahan dari knowledge base
+                # Opsional: Tampilkan info tambahan dalam expander
                 if predicted_label in disease_info:
-                     st.subheader("Detailed Information")
+                     st.subheader("Additional Details")
                      details = disease_info[predicted_label]
                      with st.expander("General Symptoms"):
-                         st.write("; ".join(details["general_symptoms"]))
+                         st.write("\n- ".join(details["general_symptoms"]))
                      with st.expander("Distinguishing Features"):
-                         st.write("; ".join(details["distinguishing_features"]))
+                         st.write("\n- ".join(details["distinguishing_features"]))
                      with st.expander("Recommended Early Actions"):
-                         st.write("; ".join(details["early_actions"]))
+                         st.write("\n- ".join(details["early_actions"]))
 
             else:
                 st.error("Prediction failed. Please check the image and try again.")
