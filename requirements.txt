@@ -1,10 +1,7 @@
 torch
 torchvision
-streamlit
 timm
-pillow
-requests
 transformers
-sentencepiece
-protobuf
-accelerate
+streamlit
+Pillow
+requests
