@@ -1,7 +1,8 @@
 # app.py
 # =============================================================
-# Minimal Streamlit UI: upload image + "Run Classification" button
-# Model must be in working dir as: best_model_overall.pth
+# Minimal Streamlit UI: upload image + "Run Classification"
+# CNN: EfficientNetV2-M (timm) – expects best_model_overall.pth
+# LLM explanation is optional & safe-fallback if transformers/pipeline unavailable
 # Language: English
 # =============================================================
 
@@ -9,13 +10,10 @@ import os
 from io import BytesIO
 
 import streamlit as st
-import requests
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-
 import timm
 from timm.data import create_transform
 
@@ -23,14 +21,8 @@ from timm.data import create_transform
 # Helpers
 # ----------------------------
 def clean_label(label: str) -> str:
-    """Make class names human-friendly: 'Apple___Black_rot' -> 'Apple → Black rot'."""
+    """Human-friendly: 'Apple___Black_rot' -> 'Apple → Black rot'."""
     return label.replace("___", " → ").replace("_", " ")
-
-def escape_markdown(s: str) -> str:
-    """Escape common Markdown characters if you ever use st.markdown."""
-    for ch in ("\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!"):
-        s = s.replace(ch, "\\" + ch)
-    return s
 
 # ----------------------------
 # Device
@@ -38,7 +30,7 @@ def escape_markdown(s: str) -> str:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ----------------------------
-# Disease knowledge mapping
+# Disease knowledge mapping (trim/extend as needed)
 # ----------------------------
 disease_info = {
     "Grape___Black_rot": {
@@ -58,137 +50,115 @@ disease_info = {
     },
     "Grape___Esca_(Black_Measles)": {
         "general_symptoms": [
-            "Interveinal chlorosis and necrosis on leaves, sometimes tiger-stripe patterns",
+            "Interveinal chlorosis and necrosis (sometimes tiger-stripe)",
             "Berries may crack and show dark spots",
-            "Wood shows dark streaking (trunk disease)"
+            "Trunk/wood dark streaking"
         ],
         "distinguishing_features": [
-            "Tiger-stripe (striped chlorosis) pattern on leaves",
-            "Trunk/wood disease involvement"
+            "Tiger-stripe chlorosis on leaves",
+            "Trunk disease involvement"
         ],
         "early_actions": [
             "Prune and remove infected wood",
-            "Improve vine vigor, consider trunk renewal strategies"
+            "Consider trunk renewal strategies"
         ]
     },
     "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)": {
         "general_symptoms": [
-            "Large brown necrotic spots with irregular margins on leaves",
-            "Spots can coalesce into extensive blighted areas",
-            "Damage reduces photosynthesis"
+            "Large irregular brown necrotic spots on leaves",
+            "Spots may coalesce into blighted areas"
         ],
         "distinguishing_features": [
-            "Large irregular spots without target rings",
-            "Severe blight patterns on older leaves"
+            "Large irregular spots without target rings"
         ],
         "early_actions": [
             "Remove heavily infected leaves",
-            "Improve airflow, consider fungicide if severe"
+            "Improve airflow; fungicide if severe"
         ]
     },
     "Grape___healthy": {
-        "general_symptoms": [
-            "Uniform green leaves, no lesions or chlorosis"
-        ],
-        "distinguishing_features": [
-            "No visible disease symptoms or necrotic areas"
-        ],
-        "early_actions": [
-            "Maintain regular monitoring and good cultural practices"
-        ]
+        "general_symptoms": ["Uniform green leaves"],
+        "distinguishing_features": ["No visible disease symptoms"],
+        "early_actions": ["Maintain good cultural practices"]
     },
     "Apple___Apple_scab": {
         "general_symptoms": [
-            "Olive-green to brown velvety lesions on leaves and fruit",
+            "Olive-green to brown velvety lesions on leaves/fruit",
             "Leaf curling or deformation"
         ],
         "distinguishing_features": [
             "Velvety scab-like lesions, olive-green on young leaves"
         ],
         "early_actions": [
-            "Remove fallen leaves, apply fungicide preventively if necessary"
+            "Remove fallen leaves; preventive fungicide if needed"
         ]
     },
     "Apple___Black_rot": {
         "general_symptoms": [
             "Leaf spots with purple margins and tan centers",
-            "Fruiting bodies (pycnidia) may appear in lesions"
+            "Pycnidia may appear in lesions"
         ],
         "distinguishing_features": [
-            "Frog-eye leaf spot pattern",
-            "Fruit rot with concentric rings on apples"
+            "Frog-eye leaf spot",
+            "Fruit rot with concentric rings"
         ],
         "early_actions": [
-            "Prune infected twigs and mummified fruit",
-            "Consider fungicide during critical periods"
+            "Prune infected twigs and mummified fruit"
         ]
     },
     "Apple___Cedar_apple_rust": {
         "general_symptoms": [
             "Yellow-orange spots on upper leaf surfaces",
-            "Tube-like aecia on underside of leaves"
+            "Tube-like aecia on the underside"
         ],
         "distinguishing_features": [
             "Orange rust spots with spore structures",
-            "Requires juniper as alternate host"
+            "Juniper is an alternate host"
         ],
         "early_actions": [
             "Remove nearby junipers if feasible",
-            "Fungicide applications in early season may help"
+            "Apply fungicide early season if risk"
         ]
     },
     "Apple___healthy": {
-        "general_symptoms": [
-            "Uniform green leaves without significant lesions"
-        ],
-        "distinguishing_features": [
-            "No visible disease symptoms"
-        ],
-        "early_actions": [
-            "Maintain orchard sanitation and monitoring"
-        ]
+        "general_symptoms": ["Uniform green leaves"],
+        "distinguishing_features": ["No disease symptoms"],
+        "early_actions": ["Maintain sanitation and monitoring"]
     },
     "Potato___Early_blight": {
         "general_symptoms": [
-            "Brown spots with concentric rings (target-like) on leaves",
+            "Brown spots with target-like concentric rings",
             "Yellow halos around lesions"
         ],
         "distinguishing_features": [
-            "Target-like concentric rings on older leaves"
+            "Target-like rings on older leaves"
         ],
         "early_actions": [
-            "Remove infected debris, rotate crops",
-            "Apply fungicide if pressure is high"
+            "Remove infected debris; rotate crops"
         ]
     },
     "Potato___Late_blight": {
         "general_symptoms": [
-            "Water-soaked lesions, rapid blight under cool/wet conditions",
-            "Whitish fungal growth under leaf in humid weather"
+            "Water-soaked lesions; rapid blight in cool/wet",
+            "Whitish growth under leaf in humid weather"
         ],
         "distinguishing_features": [
-            "Rapidly spreading blight, water-soaked lesions"
+            "Very rapid spread; water-soaked lesions"
         ],
         "early_actions": [
-            "Immediate sanitation and protective fungicide",
-            "Avoid overhead irrigation, monitor closely"
+            "Immediate sanitation + protective fungicide",
+            "Avoid overhead irrigation"
         ]
     },
     "Potato___healthy": {
-        "general_symptoms": [
-            "Green leaves without necrotic lesions or chlorosis"
-        ],
-        "distinguishing_features": [
-            "No disease symptoms"
-        ],
-        "early_actions": [
-            "Maintain general crop health and monitoring"
-        ]
+        "general_symptoms": ["Green leaves without necrosis/chlorosis"],
+        "distinguishing_features": ["No disease symptoms"],
+        "early_actions": ["Maintain crop health and monitoring"]
     }
 }
 
 # ----------------------------
-# Transform & class names (match training)
+# Transform & class names (must match training)
 # ----------------------------
 data_config = {
     'input_size': (3, 320, 320),
@@ -207,7 +177,7 @@ class_names = [
 ]
 
 # ----------------------------
-# Model & LLM loaders
+# Model loader (cached)
 # ----------------------------
 @st.cache_resource(show_spinner=False)
 def load_cnn_model(model_path: str = "best_model_overall.pth"):
@@ -229,40 +199,50 @@ def load_cnn_model(model_path: str = "best_model_overall.pth"):
     model.eval()
     return model, dev
 
+# ----------------------------
+# Optional LLM loader (safe if transformers missing)
+# ----------------------------
 @st.cache_resource(show_spinner=False)
 def load_llm(model_name: str = "google/flan-t5-base"):
-    """Load a text2text LLM; if it fails (no internet/weights), calls will fallback."""
+    """
+    Try to import transformers.pipeline only when needed.
+    If unavailable (e.g., Python 3.13 incompatibility), return None and use fallback text.
+    """
     try:
-        from transformers import pipeline
-        pipe = pipeline(
+        from transformers import pipeline as hf_pipeline  # may fail in some envs
+    except Exception as e:
+        st.warning(f"Transformers not available ({e}); using knowledge-based explanation.")
+        return None
+
+    try:
+        pipe = hf_pipeline(
             "text2text-generation",
             model=model_name,
             device=0 if torch.cuda.is_available() else -1,
             max_length=200
         )
         return pipe
-    except Exception:
-        return None  # We'll fallback to knowledge-based text
+    except Exception as e:
+        st.warning(f"LLM load failed ({e}); using knowledge-based explanation.")
+        return None
 
 # ----------------------------
 # Inference utilities
 # ----------------------------
-def test_custom_image_pil(image_pil: Image.Image, model, transform, class_names, device):
-    """Predict from an in-memory PIL image."""
+def predict_pil(image_pil: Image.Image, model, transform, class_names, device):
+    """Predict from a PIL image and return (label, confidence)."""
     try:
         input_tensor = transform(image_pil).unsqueeze(0).to(device)
         with torch.no_grad():
-            output = model(input_tensor)
-            probabilities = F.softmax(output, dim=1)
-            _, predicted_class_index = torch.max(probabilities, 1)
-        predicted_class_name = class_names[predicted_class_index.item()]
-        confidence = probabilities[0, predicted_class_index.item()].item()
-        return predicted_class_name, confidence
-    except Exception as e:
+            logits = model(input_tensor)
+            probs = F.softmax(logits, dim=1)[0]
+            idx = int(torch.argmax(probs).item())
+            return class_names[idx], float(probs[idx].item())
+    except Exception:
         return None, None
 
 def generate_explanation(predicted_label: str, disease_info_map: dict, llm_pipe=None) -> str:
-    """LLM explanation with safe fallback."""
+    """LLM explanation with robust fallback."""
     info = disease_info_map.get(predicted_label, {})
     general = info.get("general_symptoms", [])
     distinct = info.get("distinguishing_features", [])
@@ -298,50 +278,55 @@ def generate_explanation(predicted_label: str, disease_info_map: dict, llm_pipe=
 # Streamlit UI (minimal)
 # ----------------------------
 st.set_page_config(page_title="Leaf Disease Classification", page_icon="🌿", layout="centered")
-st.title("🌿 Leaf Disease Classification (CNN + LLM Explanation)")
 
-st.markdown("Upload a **leaf image** and click **Run Classification**. The app will load `best_model_overall.pth` automatically.")
+st.title("🌿 Leaf Disease Classification")
+st.caption("Upload a leaf image, then run classification. LLM explanation is optional and falls back to curated knowledge if unavailable.")
 
 image_file = st.file_uploader("Upload image (JPG/PNG)", type=["jpg", "jpeg", "png"])
+use_llm = st.checkbox("Enable LLM explanation (optional)", value=False)
 run_btn = st.button("🚀 Run Classification")
 
 if run_btn:
     if image_file is None:
         st.error("Please upload an image first.")
-    else:
-        # Load model & LLM (cached)
+        st.stop()
+
+    # Load model
+    try:
+        with st.spinner("Loading model..."):
+            model, dev = load_cnn_model("best_model_overall.pth")
+    except Exception as e:
+        st.error(f"Failed to load model: {e}")
+        st.stop()
+
+    # Read image
+    with st.spinner("Reading image..."):
         try:
-            with st.spinner("Loading model..."):
-                model, dev = load_cnn_model("best_model_overall.pth")
+            image = Image.open(image_file).convert("RGB")
         except Exception as e:
-            st.error(f"Failed to load model: {e}")
+            st.error(f"Failed to read image: {e}")
             st.stop()
 
-        with st.spinner("Loading image..."):
-            try:
-                image = Image.open(image_file).convert("RGB")
-            except Exception as e:
-                st.error(f"Failed to read image: {e}")
-                st.stop()
+    # Predict
+    with st.spinner("Running inference..."):
+        pred, conf = predict_pil(image, model, transform_val, class_names, dev)
+        if pred is None:
+            st.error("Prediction failed.")
+            st.stop()
 
-        with st.spinner("Running inference..."):
-            pred, conf = test_custom_image_pil(image, model, transform_val, class_names, dev)
-            if pred is None:
-                st.error("Prediction failed.")
-                st.stop()
+    # LLM (optional) – returns None if not available
+    with st.spinner("Preparing explanation..."):
+        llm_pipe = load_llm() if use_llm else None
+        explanation = generate_explanation(pred, disease_info, llm_pipe=llm_pipe)
 
-        # Try LLM (cached); fallback text if unavailable
-        with st.spinner("Generating explanation..."):
-            llm_pipe = load_llm()  # may be None if loading fails
-            explanation = generate_explanation(pred, disease_info, llm_pipe=llm_pipe)
+    # Display results
+    pretty_label = clean_label(pred)
+    st.subheader("🎯 Prediction")
+    st.metric("Top-1 Prediction", pretty_label, f"{conf*100:.2f}%")
 
-        # Display results
-        pretty_label = clean_label(pred)
-        st.subheader("🎯 Prediction")
-        st.metric("Top-1 Prediction", pretty_label, f"{conf*100:.2f}%")
+    st.subheader("🧠 Explanation")
+    # Use plain text to avoid Markdown underscore issues
+    st.text(explanation)
 
-        st.subheader("🧠 Explanation")
-        st.text(explanation)  # safer than markdown for underscores
-
-        st.subheader("🖼️ Input Image")
-        st.image(image, caption=f"Prediction: {pretty_label} ({conf*100:.2f}%)", use_container_width=True)
+    st.subheader("🖼️ Input Image")
+    st.image(image, caption=f"Prediction: {pretty_label} ({conf*100:.2f}%)", width="stretch")
