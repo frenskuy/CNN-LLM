@@ -1,6 +1,14 @@
+# core app
 streamlit>=1.39
 torch>=2.3.0
 torchvision>=0.18.0
 timm>=0.9.12
 pillow>=10.3.0
 requests>=2.32.0
+
+# LLM (compatible set)
+transformers==4.44.2
+huggingface-hub>=0.34,<1.0
+accelerate>=0.33.0
+safetensors>=0.4.2
+sentencepiece>=0.2.0
