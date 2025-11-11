@@ -1,67 +1,4 @@
-@st.cache_resource
-def load_model_from_file(model_path):
-    """Load model from specific file path"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    import os
-    
-    if not os.path.exists(model_path):
-        st.error(f"Model file {model_path} not found!")
-        return None, None
-    
-    file_size = os.path.getsize(model_path)
-    
-    if file_size < 1000:
-        st.error(f"⚠️ File {model_path} is too small ({file_size} bytes). This is likely a Git LFS pointer file.")
-        st.info("""
-        **To fix this, run in your local repository:**
-        ```bash
-        git lfs pull
-        git add .
-        git commit -m "Pull LFS files"
-        git push
-        ```
-        """)
-        return None, None
-    
-    try:
-        # Create model architecture
-        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
-        num_features = base_model.classifier.in_features
-        num_classes = 11
-        
-        base_model.classifier = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(num_features, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes)
-        )
-        
-        # Load weights
-        model = base_model.to(device)
-        
-        with st.spinner(f"Loading weights from {model_path}..."):
-            try:
-                state_dict = torch.load(model_path, map_location=device)
-                model.load_state_dict(state_dict)
-            except Exception as e1:
-                st.warning(f"Trying alternative loading method...")
-                try:
-                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
-                    model.load_state_dict(state_dict)
-                except Exception as e2:
-                    st.error(f"Failed to load: {e2}")
-                    raise e2
-        
-        model.eval()
-        st.success(f"✅ Model loaded from {model_path}!")
-        
-        return model, device
-        
-    except Exception as e:
-        st.error(f"❌ Error loading model: {str(e)}")
-        return None, Noneimport torch
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
@@ -286,19 +223,7 @@ def download_model_from_url(url, save_path='best_model_overall.pth'):
         return False
 
 @st.cache_resource
-def load_llm():
-    """Load the LLM pipeline for explanation generation"""
-    try:
-        llm_pipe = pipeline(
-            "text2text-generation",
-            model="google/flan-t5-base",
-            device=0 if torch.cuda.is_available() else -1,
-        )
-        st.success("✅ LLM loaded successfully!")
-        return llm_pipe
-    except Exception as e:
-        st.warning(f"Could not load LLM: {e}. Will use template-based explanations.")
-        return None
+def load_model_from_file(model_path):
     """Load model from specific file path"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -526,8 +451,8 @@ def predict_image(image, model, transform, device):
         st.error(f"Error during prediction: {e}")
         return None, None, None
 
-def generate_explanation(predicted_label, confidence, llm_pipeline=None):
-    """Generate explanation using LLM or fallback to template"""
+def generate_explanation(predicted_label, confidence):
+    """Generate structured explanation from disease info"""
     if predicted_label not in disease_info:
         return f"The model predicted '{predicted_label}' with confidence {confidence:.1%}. Detailed information for this specific class is not available."
     
@@ -541,60 +466,7 @@ def generate_explanation(predicted_label, confidence, llm_pipeline=None):
     plant_type = parts[0] if len(parts) > 0 else "Plant"
     disease_name = parts[1].replace('_', ' ') if len(parts) > 1 else "Unknown"
     
-    # Try to use LLM for more natural explanation
-    if llm_pipeline is not None:
-        try:
-            if "healthy" in disease_name.lower():
-                prompt = f"""Write a clear explanation in 2-3 paragraphs for farmers:
-
-The leaf analysis shows this {plant_type.lower()} plant is healthy (confidence: {confidence:.1%}).
-
-Healthy characteristics observed:
-{chr(10).join(f'- {s}' for s in general_symptoms)}
-
-Explain:
-1. What makes this leaf healthy
-2. Why the absence of disease symptoms is important
-3. Recommended practices to maintain health
-
-Write in a professional but accessible tone."""
-            else:
-                prompt = f"""Write a clear explanation in 2-3 paragraphs for farmers:
-
-Disease detected: {disease_name} in {plant_type.lower()} (confidence: {confidence:.1%})
-
-Symptoms observed:
-{chr(10).join(f'- {s}' for s in general_symptoms)}
-
-Key distinguishing features:
-{chr(10).join(f'- {f}' for f in distinguishing_features)}
-
-Explain:
-1. What this disease means for the plant
-2. How to identify it by the visual symptoms
-3. Recommended actions to take
-
-Write in a professional but accessible tone."""
-
-            result = llm_pipeline(
-                prompt, 
-                max_length=300,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                truncation=True
-            )
-            
-            explanation = result[0]['generated_text'].strip()
-            
-            # Check if LLM returned valid explanation
-            if len(explanation) > 100 and "Write" not in explanation and "Explain" not in explanation:
-                return explanation
-            
-        except Exception as e:
-            st.warning(f"LLM generation failed: {e}. Using template-based explanation.")
-    
-    # Fallback to template-based explanation
+    # Create explanation based on whether it's healthy or diseased
     if "healthy" in disease_name.lower():
         explanation = f"### 🌿 Diagnosis: Healthy {plant_type} Plant\n\n"
         explanation += f"The analysis indicates that this {plant_type.lower()} leaf appears **healthy** with a confidence level of **{confidence:.1%}**. "
@@ -676,19 +548,16 @@ def main():
     model_url = manual_url if manual_url else None
     
     # Load model with selected file
-    with st.spinner("Loading classification model..."):
+    with st.spinner("Loading model..."):
         if pth_files and selected_model:
+            # Override the load_model to use selected file
             model, device = load_model_from_file(selected_model)
         else:
             model, device = load_model(model_url)
-    
+        
     if model is None:
         st.error("Failed to load model. Please check the configuration.")
         return
-    
-    # Load LLM for explanation generation
-    with st.spinner("Loading explanation model..."):
-        llm_pipe = load_llm()
         
     transform = get_transform()
     
@@ -761,8 +630,7 @@ def main():
                 
                 # Generate and display explanation
                 st.subheader("📋 Detailed Analysis")
-                with st.spinner("Generating explanation..."):
-                    explanation = generate_explanation(predicted_label, confidence, llm_pipe)
+                explanation = generate_explanation(predicted_label, confidence)
                 st.markdown(explanation)
                 
                 # Display disease information in expandable sections
