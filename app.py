@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 from PIL import Image
 import streamlit as st
+from transformers import pipeline
 import requests
 from io import BytesIO
 import timm
 from timm.data import create_transform
-from transformers import pipeline
 
 # Page configuration
 st.set_page_config(
@@ -189,232 +190,41 @@ class_names = [
     'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'
 ]
 
-def download_model_from_url(url, save_path='best_model_overall.pth'):
-    """Download model from URL if not exists locally"""
-    import os
-    if os.path.exists(save_path):
-        file_size = os.path.getsize(save_path)
-        if file_size > 1000:  # File exists and is not a placeholder
-            return True
-    
-    try:
-        st.info(f"Downloading model from URL...")
-        response = requests.get(url, stream=True, timeout=300)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(save_path, 'wb') as f:
-            if total_size == 0:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                progress_bar = st.progress(0)
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        progress_bar.progress(min(downloaded / total_size, 1.0))
-        
-        st.success("✅ Model downloaded successfully!")
-        return True
-    except Exception as e:
-        st.error(f"Failed to download model: {e}")
-        return False
-
 @st.cache_resource
-def load_model_from_file(model_path):
-    """Load model from specific file path"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    import os
-    
-    if not os.path.exists(model_path):
-        st.error(f"Model file {model_path} not found!")
-        return None, None
-    
-    file_size = os.path.getsize(model_path)
-    
-    if file_size < 1000:
-        st.error(f"⚠️ File {model_path} is too small ({file_size} bytes). This is likely a Git LFS pointer file.")
-        st.info("""
-        **To fix this, run in your local repository:**
-        ```bash
-        git lfs pull
-        git add .
-        git commit -m "Pull LFS files"
-        git push
-        ```
-        """)
-        return None, None
-    
-    try:
-        # Create model architecture
-        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
-        num_features = base_model.classifier.in_features
-        num_classes = 11
-        
-        base_model.classifier = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(num_features, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes)
-        )
-        
-        # Load weights
-        model = base_model.to(device)
-        
-        with st.spinner(f"Loading weights from {model_path}..."):
-            try:
-                state_dict = torch.load(model_path, map_location=device)
-                model.load_state_dict(state_dict)
-            except Exception as e1:
-                st.warning(f"Trying alternative loading method...")
-                try:
-                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
-                    model.load_state_dict(state_dict)
-                except Exception as e2:
-                    st.error(f"Failed to load: {e2}")
-                    raise e2
-        
-        model.eval()
-        st.success(f"✅ Model loaded from {model_path}!")
-        
-        return model, device
-        
-    except Exception as e:
-        st.error(f"❌ Error loading model: {str(e)}")
-        return None, None
-
-@st.cache_resource
-def load_model(model_url=None):
+def load_model():
     """Load the trained model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    import os
+    # Create model architecture
+    base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
+    num_features = base_model.classifier.in_features
+    num_classes = 11
     
-    # Try multiple possible model file names
-    possible_paths = [
-        'best_model_overall.pth',
-        'best_model_overall1.pth',
-        './best_model_overall.pth',
-        './best_model_overall1.pth'
-    ]
+    base_model.classifier = nn.Sequential(
+        nn.Dropout(0.2),
+        nn.Linear(num_features, 128),
+        nn.ReLU(),
+        nn.Dropout(0.2),
+        nn.Linear(128, num_classes)
+    )
     
-    model_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            file_size = os.path.getsize(path)
-            if file_size > 1000:  # Not a Git LFS pointer
-                model_path = path
-                st.info(f"✅ Found model file: {path}")
-                break
+    # Load weights
+    model = base_model.to(device)
+    model.load_state_dict(torch.load('best_model_overall.pth', map_location=device))
+    model.eval()
     
-    # Try to download from URL if provided and file doesn't exist
-    if model_url and model_path is None:
-        model_path = 'best_model_overall.pth'
-        if not download_model_from_url(model_url, model_path):
-            return None, None
-    
-    # Check if model file exists
-    if model_path is None or not os.path.exists(model_path):
-        st.error(f"❌ Model file not found in repository.")
-        
-        # Show all files in current directory for debugging
-        st.warning("📂 Files found in current directory:")
-        files = os.listdir('.')
-        for f in files:
-            size = os.path.getsize(f) if os.path.isfile(f) else 0
-            st.text(f"  - {f} ({size} bytes)")
-        
-        st.info("""
-        **Please provide model file using one of these methods:**
-        
-        1. **Upload via GitHub with Git LFS** (for files > 100MB):
-           ```bash
-           git lfs install
-           git lfs track "*.pth"
-           git add .gitattributes best_model_overall.pth
-           git commit -m "Add model"
-           git push
-           ```
-        
-        2. **Host on Google Drive:**
-           - Upload your .pth file to Google Drive
-           - Get shareable link (Anyone with the link can view)
-           - Convert to direct download link
-           - Add URL to secrets.toml or code
-        
-        3. **Use Hugging Face Hub:**
-           - Upload model to Hugging Face
-           - Download in app using URL
-        """)
-        return None, None
-    
-    # Check file size
-    file_size = os.path.getsize(model_path)
-    st.info(f"📦 Model file found. Size: {file_size / (1024*1024):.2f} MB")
-    
-    if file_size < 1000:  # Less than 1KB - likely a Git LFS pointer
-        st.error("⚠️ Model file appears to be a Git LFS pointer file (too small).")
-        st.info("""
-        **Fix Git LFS issue:**
-        ```bash
-        git lfs pull
-        git add best_model_overall.pth
-        git commit -m "Update model file"
-        git push
-        ```
-        Or provide a direct download URL for the model.
-        """)
-        return None, None
-    
-    try:
-        # Create model architecture
-        base_model = timm.create_model('efficientnetv2_rw_m', pretrained=False)
-        num_features = base_model.classifier.in_features
-        num_classes = 11
-        
-        base_model.classifier = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(num_features, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes)
-        )
-        
-        # Load weights
-        model = base_model.to(device)
-        
-        with st.spinner("Loading model weights..."):
-            try:
-                # Try normal loading
-                state_dict = torch.load(model_path, map_location=device)
-                model.load_state_dict(state_dict)
-            except Exception as e1:
-                st.warning(f"Normal loading failed, trying alternative method...")
-                try:
-                    # Try loading with weights_only=False
-                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
-                    model.load_state_dict(state_dict)
-                except Exception as e2:
-                    raise e2
-        
-        model.eval()
-        st.success("✅ Model loaded successfully!")
-        
-        return model, device
-        
-    except Exception as e:
-        st.error(f"❌ Error loading model: {str(e)}")
-        st.info("""
-        **The model file might be corrupted. Please:**
-        1. Re-download the original model file
-        2. Verify the file is not corrupted (check file size)
-        3. Re-upload to GitHub using Git LFS
-        """)
-        return None, None
+    return model, device
+
+@st.cache_resource
+def load_llm():
+    """Load the LLM pipeline"""
+    llm_pipe = pipeline(
+        "text2text-generation",
+        model="google/flan-t5-base",
+        device=0 if torch.cuda.is_available() else -1,
+        max_length=200
+    )
+    return llm_pipe
 
 def get_transform():
     """Get the validation transform"""
@@ -451,60 +261,38 @@ def predict_image(image, model, transform, device):
         st.error(f"Error during prediction: {e}")
         return None, None, None
 
-def generate_explanation(predicted_label, confidence):
-    """Generate structured explanation from disease info"""
+def generate_explanation(predicted_label, confidence, llm_pipeline):
+    """Generate explanation using LLM"""
     if predicted_label not in disease_info:
-        return f"The model predicted '{predicted_label}' with confidence {confidence:.1%}. Detailed information for this specific class is not available."
+        return f"The model predicted '{predicted_label}' with confidence {confidence:.3f}. Detailed information for this specific class is not available."
     
     disease_details = disease_info[predicted_label]
     general_symptoms = disease_details.get("general_symptoms", ["Symptoms not specified."])
     distinguishing_features = disease_details.get("distinguishing_features", ["Features not specified."])
-    early_actions = disease_details.get("early_actions", ["General monitoring recommended."])
     
-    # Parse the predicted label
-    parts = predicted_label.split('___')
-    plant_type = parts[0] if len(parts) > 0 else "Plant"
-    disease_name = parts[1].replace('_', ' ') if len(parts) > 1 else "Unknown"
+    prompt = f"""
+    You are an agronomy assistant who explains plant leaf disease classification results clearly and accurately in English.
+    ### CNN Inference Results
+    - Primary predicted label: **{predicted_label}**
+    - Model confidence (probability): **{confidence:.3f}**
+    ### Characteristic Symptoms
+    - General symptoms: {'; '.join(general_symptoms)}
+    - Distinguishing features: {'; '.join(distinguishing_features)}
+    ### Your Tasks
+    1. Explain why this image likely belongs to '{predicted_label}', linking to characteristic symptoms.
+    2. Highlight distinguishing cues that differentiate this disease from others.
+    3. Provide safe, general early actions for follow-up.
+    4. Use a professional, concise tone; maximum 8-10 sentences.
+    """
     
-    # Create explanation based on whether it's healthy or diseased
-    if "healthy" in disease_name.lower():
-        explanation = f"### 🌿 Diagnosis: Healthy {plant_type} Plant\n\n"
-        explanation += f"The analysis indicates that this {plant_type.lower()} leaf appears **healthy** with a confidence level of **{confidence:.1%}**. "
-        explanation += f"The leaf exhibits {general_symptoms[0].lower()}, which are characteristic indicators of healthy plant tissue. "
-        explanation += "The absence of disease symptoms such as lesions, discoloration patterns, or fungal growth confirms this positive assessment.\n\n"
-        
-        explanation += "**Visual Characteristics:**\n\n"
-        explanation += f"The examined leaf shows {distinguishing_features[0].lower()}, which is typical of well-maintained and disease-free foliage. "
-        explanation += "The uniform coloration and intact tissue structure indicate proper nutrient uptake and absence of pathogen infection.\n\n"
-        
-        explanation += "**Recommendations:**\n\n"
-        for i, action in enumerate(early_actions, 1):
-            explanation += f"{i}. {action}\n"
-        explanation += f"{len(early_actions) + 1}. Maintain current cultivation practices including proper watering, fertilization, and pest management\n"
-        explanation += f"{len(early_actions) + 2}. Regular monitoring is essential to detect any early signs of disease development\n"
-    else:
-        explanation = f"### 🔬 Diagnosis: {disease_name.title()}\n\n"
-        explanation += f"The image analysis has identified **{disease_name.lower()}** affecting this {plant_type.lower()} plant with a confidence level of **{confidence:.1%}**. "
-        explanation += f"This disease typically manifests as {general_symptoms[0].lower()}. "
-        
-        if len(general_symptoms) > 1:
-            explanation += f"Additionally, affected plants may exhibit {general_symptoms[1].lower()}. "
-        
-        if len(general_symptoms) > 2:
-            explanation += f"{general_symptoms[2]} "
-        
-        explanation += "\n\n**Key Distinguishing Features:**\n\n"
-        for i, feature in enumerate(distinguishing_features, 1):
-            explanation += f"{i}. {feature}\n"
-        
-        explanation += f"\nThese specific visual indicators help differentiate {disease_name.lower()} from other common plant diseases, ensuring accurate diagnosis and appropriate treatment planning.\n\n"
-        
-        explanation += "**Recommended Actions:**\n\n"
-        for i, action in enumerate(early_actions, 1):
-            explanation += f"{i}. {action}\n"
-        
-        explanation += "\n**Important Note:** Early detection and proper disease management are crucial for preventing disease spread and minimizing crop damage. "
-        explanation += "Consider consulting with a local agricultural extension officer for region-specific treatment recommendations and best practices.\n"
+    try:
+        explanation_result = llm_pipeline(prompt, max_length=200, do_sample=True, temperature=0.7, truncation=True)
+        explanation = explanation_result[0]['generated_text']
+    except Exception as e:
+        st.warning(f"Could not generate LLM explanation: {e}")
+        explanation = f"The model predicted '{predicted_label}' with {confidence:.1%} confidence. "
+        explanation += f"General symptoms: {'; '.join(general_symptoms)}. "
+        explanation += f"Distinguishing features: {'; '.join(distinguishing_features)}."
     
     return explanation
 
@@ -513,60 +301,20 @@ def main():
     st.title("🌿 Plant Disease Classification System")
     st.write("Upload an image of a plant leaf to detect diseases in Apple, Grape, and Potato plants.")
     
-    import os
-    
-    # Show model file selector in sidebar
-    with st.sidebar:
-        st.header("⚙️ Model Configuration")
-        
-        # List all .pth files in directory
-        pth_files = [f for f in os.listdir('.') if f.endswith('.pth')]
-        
-        if pth_files:
-            st.success(f"Found {len(pth_files)} model file(s):")
-            selected_model = st.selectbox("Select model file:", pth_files)
-            
-            # Show file info
-            if selected_model:
-                file_size = os.path.getsize(selected_model)
-                st.info(f"Size: {file_size / (1024*1024):.2f} MB")
-                
-                if file_size < 1000:
-                    st.warning("⚠️ File seems too small. Might be Git LFS pointer.")
-        else:
-            st.warning("No .pth files found in repository")
-            selected_model = None
-        
-        # Manual URL input
-        st.subheader("Or provide URL:")
-        manual_url = st.text_input(
-            "Model URL", 
-            placeholder="https://...",
-            help="Direct download URL for model file"
-        )
-    
-    model_url = manual_url if manual_url else None
-    
-    # Load model with selected file
+    # Load model and LLM
     with st.spinner("Loading model..."):
-        if pth_files and selected_model:
-            # Override the load_model to use selected file
-            model, device = load_model_from_file(selected_model)
-        else:
-            model, device = load_model(model_url)
-        
-    if model is None:
-        st.error("Failed to load model. Please check the configuration.")
-        return
-        
-    transform = get_transform()
+        model, device = load_model()
+        llm_pipe = load_llm()
+        transform = get_transform()
+    
+    st.success("Model loaded successfully!")
     
     # Sidebar
     st.sidebar.header("About")
     st.sidebar.info(
         "This application uses a deep learning model (EfficientNetV2-M) "
         "to classify plant diseases in Apple, Grape, and Potato leaves. "
-        "It provides detailed explanations based on agronomic knowledge."
+        "It provides detailed explanations using an AI language model."
     )
     
     st.sidebar.header("Supported Classes")
@@ -586,7 +334,7 @@ def main():
         image_url = st.text_input("Enter image URL:")
         if image_url:
             try:
-                response = requests.get(image_url, timeout=10)
+                response = requests.get(image_url)
                 response.raise_for_status()
                 image = Image.open(BytesIO(response.content))
             except Exception as e:
@@ -630,12 +378,14 @@ def main():
                 
                 # Generate and display explanation
                 st.subheader("📋 Detailed Analysis")
-                explanation = generate_explanation(predicted_label, confidence)
-                st.markdown(explanation)
+                with st.spinner("Generating explanation..."):
+                    explanation = generate_explanation(predicted_label, confidence, llm_pipe)
                 
-                # Display disease information in expandable sections
+                st.write(explanation)
+                
+                # Display disease information
                 if predicted_label in disease_info:
-                    st.subheader("🔬 Additional Disease Information")
+                    st.subheader("🔬 Disease Information")
                     disease_details = disease_info[predicted_label]
                     
                     with st.expander("General Symptoms"):
