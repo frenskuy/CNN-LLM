@@ -254,6 +254,26 @@ def apply_custom_css():
         padding: 1rem 0;
     }
     
+    /* Custom title styling */
+    .main-title {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        font-size: 3rem;
+        font-weight: 800;
+        text-align: center;
+        margin-bottom: 0;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .subtitle {
+        color: #555;
+        font-size: 1.3rem;
+        text-align: center;
+        font-weight: 500;
+    }
+    
     /* Card-like containers */
     .result-card {
         background: white;
