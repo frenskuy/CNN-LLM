@@ -1,4 +1,3 @@
-# disease_info.py
 # Mapping Informasi Penyakit untuk sistem CNN + LLM
 
 disease_info = {
@@ -166,3 +165,4 @@ disease_info = {
         ]
     }
 }
+
