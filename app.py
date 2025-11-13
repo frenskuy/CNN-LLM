@@ -267,7 +267,7 @@ def main():
         col1, col2 = st.columns(2)
 
         with col1:
-            st.image(image, caption=f"Input image ({source})", use_column_width=True)
+            st.image(image, caption=f"Input image ({source})", use_container_width=True)
 
         with st.spinner("Running CNN prediction..."):
             # Ambil lagi dari cache_resource (instansinya sama)
@@ -295,3 +295,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
