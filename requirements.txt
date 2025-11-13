@@ -1,8 +1,7 @@
 streamlit
 torch
-torchvision
 timm
 pillow
-numpy
 requests
-
+langchain-community
+replicate
