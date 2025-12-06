@@ -1,4 +1,4 @@
-# Streamlit app: Hybrid CNN (EfficientNetV2-M) + LLM (Replicate / IBM Granite)
+# Streamlit app: Hybrid CNN (EfficientNetV2-M) + LLM (GPT-4o via Replicate)
 
 import os
 from io import BytesIO
@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 import timm
-from timm.data import create_transform
+from torchvision import transforms
 from langchain_community.llms import Replicate
 
 from disease_info import disease_info
@@ -22,28 +22,34 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # -------------------------------------------------------------------
-# 1. Model CNN (EfficientNetV2-M) + weight
+# 1. Model CNN (EfficientNetV2-RW-M) + weight
+#    Disamakan dengan llmtes.ipynb
 # -------------------------------------------------------------------
 @st.cache_resource
 def load_model(model_path: str = "best_model_overall.pth"):
-    """
-    Muat arsitektur EfficientNetV2-M + head custom seperti di notebook
-    dan load weight dari file .pth.
-    """
-    base_model = timm.create_model("efficientnetv2_rw_m", pretrained=False)
+    # Inisialisasi model EfficientNetV2-RW-M (tanpa pretrained)
+    model = timm.create_model("efficientnetv2_rw_m", pretrained=False)
 
-    # Head harus sama persis dengan training
-    num_features = base_model.classifier.in_features
-    num_classes = 11
-    base_model.classifier = nn.Sequential(
-        nn.Dropout(0.2),
-        nn.Linear(num_features, 128),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(128, num_classes),
-    )
+    # Head Linear langsung ke 11 kelas (tanpa MLP tambahan)
+    class_names = [
+        "Apple___Apple_scab",
+        "Apple___Black_rot",
+        "Apple___Cedar_apple_rust",
+        "Apple___healthy",
+        "Grape___Black_rot",
+        "Grape___Esca_(Black_Measles)",
+        "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)",
+        "Grape___healthy",
+        "Potato___Early_blight",
+        "Potato___Late_blight",
+        "Potato___healthy",
+    ]
+    num_classes = len(class_names)
 
-    model = base_model.to(device)
+    num_features = model.classifier.in_features
+    model.classifier = nn.Linear(num_features, num_classes)
+
+    model = model.to(device)
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(
@@ -60,26 +66,34 @@ def load_model(model_path: str = "best_model_overall.pth"):
 @st.cache_resource
 def load_transform():
     """
-    Transform inference yang sama dengan data_config di notebook.
+    Transform inference yang sama dengan transform_val di llmtes.ipynb:
+    Resize -> CenterCrop -> ToTensor -> Normalize(ImageNet).
     """
-    data_config = {
-        "input_size": (3, 320, 320),
-        "interpolation": "bicubic",
-        "mean": (0.485, 0.456, 0.406),
-        "std": (0.229, 0.224, 0.225),
-        "crop_pct": 1.0,
-        "crop_mode": "center",
-    }
-    return create_transform(**data_config, is_training=False)
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    input_size = (3, 320, 320)
+    crop_pct = 1.0
+
+    transform_val = transforms.Compose([
+        transforms.Resize(
+            (int(input_size[1] / crop_pct), int(input_size[2] / crop_pct))
+        ),
+        transforms.CenterCrop(input_size[1:]),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std),
+    ])
+    return transform_val
 
 
 # -------------------------------------------------------------------
-# 2. LLM Replicate (IBM Granite 3.2 8B Instruct)
+# 2. LLM Replicate (openai/gpt-4o) - disamakan dengan llmtes.ipynb
 # -------------------------------------------------------------------
 @st.cache_resource
 def load_llm():
     """
-    Inisialisasi LLM Replicate.
+    Inisialisasi LLM Replicate dengan model 'openai/gpt-4o'
+    seperti di llmtes.ipynb.
+
     Di Streamlit Cloud, set REPLICATE_API_TOKEN via menu 'Secrets'.
     """
     api_token = None
@@ -100,18 +114,24 @@ def load_llm():
             "Set di .streamlit/secrets.toml (lokal) atau di Secrets Streamlit Cloud."
         )
 
-    model_name = "ibm-granite/granite-3.2-8b-instruct"
+    model_name = "openai/gpt-4o"
 
     llm = Replicate(
         model=model_name,
         replicate_api_token=api_token,
-        model_kwargs={"max_new_tokens": 200, "temperature": 0.7},
+        model_kwargs={
+            "max_tokens": 200,
+            "min_tokens": 10,
+            "temperature": 0.7,
+            "top_k": 50,
+            "top_p": 0.9,
+        },
     )
     return llm
 
 
 # -------------------------------------------------------------------
-# 3. Kelas target (harus sama dengan training)
+# 3. Kelas target (harus sama dengan training + notebook)
 # -------------------------------------------------------------------
 CLASS_NAMES = [
     "Apple___Apple_scab",
@@ -166,13 +186,15 @@ def load_image_from_input(uploaded_file, url: str):
 def predict(image: Image.Image, model, transform):
     """
     CNN inference: image -> label + confidence.
+    Diselaraskan dengan test_custom_image di llmtes.ipynb:
+    transform -> unsqueeze -> softmax -> argmax.
     """
     tensor = transform(image).unsqueeze(0).to(device)
     with torch.no_grad():
         logits = model(tensor)
-        probs = F.softmax(logits, dim=1)
-        conf, idx = torch.max(probs, dim=1)
+        probs = F.softmax(logits, dim=1)[0]
 
+    conf, idx = torch.max(probs, dim=0)
     label = CLASS_NAMES[idx.item()]
     confidence = float(conf.item())
     return label, confidence
@@ -180,57 +202,69 @@ def predict(image: Image.Image, model, transform):
 
 # -------------------------------------------------------------------
 # 5. Prompt builder + LLM explanation
+#    Disamakan semantik dengan predict_and_explain di llmtes.ipynb
 # -------------------------------------------------------------------
-def build_prompt(label: str, details: dict) -> str:
-    general_symptoms = details.get("general_symptoms", [])
-    distinguishing_features = details.get("distinguishing_features", [])
-    early_actions = details.get("early_actions", [])
+def build_prompt(label: str, details: dict, confidence: float) -> str:
+    general_symptoms = details.get(
+        "general_symptoms",
+        ["Symptoms not specified in knowledge base."]
+    )
+    distinguishing_features = details.get(
+        "distinguishing_features",
+        ["Distinguishing features not specified in knowledge base."]
+    )
+    early_actions = details.get(
+        "early_actions",
+        ["General monitoring recommended."]
+    )
 
     prompt = f"""
-You are an agronomy assistant that explains plant leaf diseases to farmers and agronomists.
+You are an agronomy assistant who explains plant leaf disease classification results clearly, informatively, and accurately in English.
+Ground your explanation in agronomic knowledge and visible symptoms.
 
-Predicted disease label: {label}
+### CNN Inference Results
+- Primary predicted label: **{label}**
+- Model confidence (probability): **{confidence:.3f}**
 
-General symptoms:
-- """ + "\n- ".join(general_symptoms) + """
+### Characteristic Symptoms (from internal knowledge base)
+- General symptoms: {('; '.join(general_symptoms))}
+- Distinguishing features: {('; '.join(distinguishing_features))}
+- Suggested early actions: {('; '.join(early_actions))}
 
-Distinguishing features:
-- """ + "\n- ".join(distinguishing_features) + """
-
-Early actions:
-- """ + "\n- ".join(early_actions) + """
-
-Write a concise explanation (2–3 short paragraphs) in English that:
-1. Describes what this disease is and how it typically appears on leaves.
-2. Highlights the key visual cues that match the symptoms above.
-3. Suggests early, practical actions farmers can take (without naming specific commercial fungicide brands).
-
-Avoid repeating the bullet lists verbatim; paraphrase them into natural text.
+### Your Tasks
+1. Explain why this image most likely belongs to the label '{label}' by linking your reasoning to the characteristic symptoms provided.
+2. Highlight distinguishing cues that differentiate this disease from other similar classes (for example, 'Early_blight shows concentric rings, unlike Late_blight which is water-soaked').
+3. Provide safe, general early actions for follow-up (no brand-specific fungicide prescriptions).
+4. Use a professional, concise tone; maximum 8–10 sentences.
+5. Do not invent facts beyond the known symptom domain; if uncertain, briefly state the uncertainty.
 """
     return prompt
 
 
-def generate_explanation(llm, label: str) -> str:
+def generate_explanation(llm, label: str, confidence: float) -> str:
     details = disease_info.get(label)
     if not details:
         return (
             f"No detailed disease information found in internal mapping "
-            f"for label '{label}'."
+            f"for label '{label}'. The model confidence is {confidence:.3f}."
         )
 
-    prompt = build_prompt(label, details)
+    prompt = build_prompt(label, details, confidence)
 
     try:
-        # Replicate LLM dari LangChain mendukung .invoke()
         explanation = llm.invoke(prompt)
     except Exception as e:
         # Fallback kalau LLM error supaya app tetap jalan
+        general_symptoms = details.get("general_symptoms", [])
+        distinguishing_features = details.get("distinguishing_features", [])
+        early_actions = details.get("early_actions", [])
         explanation = (
             f"LLM error: {e}\n\n"
             "Fallback summary based on internal rules:\n"
-            f"- General symptoms: {', '.join(details.get('general_symptoms', []))}\n"
-            f"- Distinguishing features: {', '.join(details.get('distinguishing_features', []))}\n"
-            f"- Early actions: {', '.join(details.get('early_actions', []))}\n"
+            f"- Predicted label: {label} (confidence {confidence:.3f})\n"
+            f"- General symptoms: {', '.join(general_symptoms)}\n"
+            f"- Distinguishing features: {', '.join(distinguishing_features)}\n"
+            f"- Early actions: {', '.join(early_actions)}\n"
         )
     return explanation
 
@@ -379,8 +413,16 @@ def main():
     apply_custom_css()
 
     # Header
-    st.markdown("<h1 style='text-align: center; color: #2c3e50; margin-bottom: 0;'>🌿 Plant Disease AI Diagnosis</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #7f8c8d; font-size: 1.2rem;'>Powered by CNN + Large Language Model</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<h1 style='text-align: center; color: #2c3e50; margin-bottom: 0;'>"
+        "🌿 Plant Disease AI Diagnosis</h1>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        "<p style='text-align: center; color: #7f8c8d; font-size: 1.2rem;'>"
+        "Powered by EfficientNetV2-RW-M + GPT-4o (via Replicate)</p>",
+        unsafe_allow_html=True
+    )
     
     st.markdown("---")
 
@@ -399,7 +441,7 @@ def main():
 
         try:
             llm = load_llm()
-            st.success("✅ LLM Ready (IBM Granite)")
+            st.success("✅ LLM Ready (GPT-4o via Replicate)")
         except Exception as e:
             st.warning(f"⚠️ LLM not available: {e}")
             llm = None
@@ -412,7 +454,10 @@ def main():
         
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("This app uses **EfficientNetV2-M** for image classification and **IBM Granite** LLM for generating detailed disease explanations.")
+        st.markdown(
+            "This app uses **EfficientNetV2-RW-M** for image classification "
+            "and **GPT-4o (via Replicate)** for generating detailed disease explanations."
+        )
         
         with st.expander("🔍 All Detectable Classes"):
             for idx, class_name in enumerate(CLASS_NAMES, 1):
@@ -424,11 +469,19 @@ def main():
     
     with col_upload:
         st.markdown("### 📤 Upload Image")
-        uploaded = st.file_uploader("Choose a leaf image", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+        uploaded = st.file_uploader(
+            "Choose a leaf image",
+            type=["jpg", "jpeg", "png"],
+            label_visibility="collapsed"
+        )
     
     with col_url:
         st.markdown("### 🔗 Or Use URL")
-        url = st.text_input("Paste image URL", label_visibility="collapsed", placeholder="https://example.com/leaf.jpg")
+        url = st.text_input(
+            "Paste image URL",
+            label_visibility="collapsed",
+            placeholder="https://example.com/leaf.jpg"
+        )
 
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -468,7 +521,10 @@ def main():
             
             status_class = "status-healthy" if info['status'] == 'healthy' else "status-diseased"
             status_text = "✅ Healthy" if info['status'] == 'healthy' else "⚠️ Disease Detected"
-            st.markdown(f'<div class="{status_class}">{status_text}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="{status_class}">{status_text}</div>',
+                unsafe_allow_html=True
+            )
             
             st.markdown("#### Confidence Level")
             confidence_pct = confidence * 100
@@ -498,7 +554,7 @@ def main():
             
             st.metric("Confidence Level", f"{confidence:.2%}", conf_status)
             st.metric("Plant Type", info['plant'])
-            st.metric("Health Status", info['condition'])
+            st.metric("Condition", info['condition'])
             
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -508,7 +564,7 @@ def main():
             st.markdown("### 🤖 AI-Generated Explanation")
             
             with st.spinner("💭 Generating detailed explanation..."):
-                explanation = generate_explanation(llm, label)
+                explanation = generate_explanation(llm, label, confidence)
             
             st.markdown('<div class="result-card">', unsafe_allow_html=True)
             st.markdown(explanation)
@@ -536,11 +592,19 @@ def main():
                             st.markdown(f"- {action}")
         else:
             st.markdown("---")
-            st.info("💡 **LLM not configured.** Set REPLICATE_API_TOKEN to enable detailed AI explanations.")
+            st.info(
+                "💡 **LLM not configured.** Set REPLICATE_API_TOKEN "
+                "to enable detailed AI explanations."
+            )
 
     # Footer
     st.markdown("---")
-    st.markdown("<p style='text-align: center; color: #7f8c8d;'>Made with ❤️ using Streamlit | EfficientNetV2-M + IBM Granite LLM</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<p style='text-align: center; color: #7f8c8d;'>"
+        "Made with ❤️ using Streamlit | EfficientNetV2-RW-M + GPT-4o (Replicate)"
+        "</p>",
+        unsafe_allow_html=True
+    )
 
 
 if __name__ == "__main__":
